@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PEA SPARK · Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#e6edf3}
+a{color:#00e5ff;text-decoration:none}
+a:hover{text-decoration:underline}
+
+.top-nav{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 20px;border-bottom:1px solid #30363d;background:#161b22;
+}
+.nav-links{display:flex;gap:12px;font-size:13px}
+.nav-links a{padding:6px 12px;border:1px solid #30363d;border-radius:6px;color:#c9d1d9}
+.nav-links a:hover{background:#21262d;text-decoration:none}
+
+.page{max-width:1200px;margin:0 auto;padding:24px 20px 48px}
+
+.logo-wrap{
+  display:flex;flex-direction:column;align-items:center;
+  margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid #30363d;
+}
+.dash-logo{
+  width:120px;height:120px;object-fit:contain;margin-bottom:10px;
+  filter:drop-shadow(0 0 12px rgba(0,229,255,.25));
+}
+.logo-fallback{
+  display:none;width:88px;height:88px;border-radius:16px;
+  background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.35);
+  align-items:center;justify-content:center;font-size:42px;margin-bottom:10px;
+}
+.logo-fallback.show{display:flex}
+.brand-title{font-size:22px;font-weight:700;letter-spacing:.04em}
+.brand-sub{font-size:12px;color:#768390;margin-top:4px;font-family:monospace}
+
+h1{font-size:18px;font-weight:600;margin-bottom:6px}
+.section-hint{font-size:12px;color:#768390;margin-bottom:16px}
+
+.card{
+  background:#161b22;border:1px solid #30363d;border-radius:10px;
+  padding:18px 20px;margin-bottom:20px;
+}
+.card-title{
+  font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+  color:#768390;margin-bottom:14px;
+}
+.chart-box{position:relative;height:320px}
+.chart-box.pie{height:240px}
+
+.month-badge{
+  display:inline-block;margin-bottom:16px;padding:4px 12px;
+  border-radius:20px;font-size:12px;font-family:monospace;
+  background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.35);color:#00e5ff;
+}
+.month-badge.empty{color:#768390;border-color:#30363d;background:transparent}
+
+.pie-row{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:20px;
+}
+@media(max-width:960px){.pie-row{grid-template-columns:1fr}}
+.pie-card{
+  background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;
+}
+.pie-card h2{font-size:14px;font-weight:600;margin-bottom:10px;text-align:center}
+
+.legend-wrap{margin-top:12px}
+.legend-title{
+  font-size:10px;text-transform:uppercase;letter-spacing:.06em;
+  color:#768390;margin-bottom:8px;text-align:center;
+}
+.legend-grid{display:flex;flex-direction:column;gap:6px}
+.legend-item{
+  display:flex;align-items:center;gap:8px;padding:6px 8px;
+  background:#161b22;border:1px solid #30363d;border-radius:5px;font-size:11px;
+}
+.legend-swatch{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+.legend-name{flex:1;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.legend-meta{font-family:monospace;color:#768390;font-size:10px;white-space:nowrap}
+
+.stats-row{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px}
+.stat-pill{
+  padding:8px 14px;background:rgba(255,255,255,.04);border:1px solid #30363d;
+  border-radius:8px;font-size:12px;
+}
+.stat-pill b{font-family:monospace;font-size:15px;color:#00e5ff;margin-right:6px}
+
+.empty-state{
+  text-align:center;padding:48px 20px;color:#768390;font-size:14px;line-height:1.6;
+}
+.empty-state span{display:block;margin-top:8px;font-size:12px}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <span style="font-size:13px;color:#768390">PEA SPARK · รายงานไฟเสีย</span>
+  <div class="nav-links">
+    <a href="/">← แผนที่ปฏิบัติการ</a>
+    <a href="/logout">Logout</a>
+  </div>
+</nav>
+
+<main class="page">
+  <header class="logo-wrap">
+    <img class="dash-logo" src="{{ url_for('static', filename='logo.png') }}" alt="PEA Logo"
+         onerror="this.style.display='none';document.getElementById('logo-fb').classList.add('show')" />
+    <div id="logo-fb" class="logo-fallback">⚡</div>
+    <div class="brand-title">PEA SPARK</div>
+    <div class="brand-sub">Provincial Electricity Authority · Prachuap Khiri Khan</div>
+  </header>
+
+  <div class="stats-row" id="stats-row" style="display:none">
+    <div class="stat-pill">รวมเหตุการณ์ <b id="stat-total">0</b></div>
+    <div class="stat-pill">จำนวนเดือนที่มีข้อมูล <b id="stat-months">0</b></div>
+  </div>
+
+  <section class="card" id="bar-section">
+    <div class="card-title">จำนวนเหตุการณ์ไฟเสียรายเดือน</div>
+    <h1>กราฟแท่ง — ไฟเสียต่อเดือน</h1>
+    <p class="section-hint">คลิกที่แท่งกราฟเพื่อดูรายละเอียดสาเหตุ / ฟีดเดอร์ / เฟสที่ดับ (ด้านล่าง)</p>
+    <div class="chart-box">
+      <canvas id="chart-monthly"></canvas>
+    </div>
+  </section>
+
+  <section class="card" id="pie-section">
+    <div class="card-title">รายละเอียดตามเดือนที่เลือก</div>
+    <div id="month-badge" class="month-badge empty">ยังไม่ได้เลือกเดือน</div>
+
+    <div class="pie-row">
+      <div class="pie-card">
+        <h2>สาเหตุ</h2>
+        <div class="chart-box pie"><canvas id="chart-causes"></canvas></div>
+        <div class="legend-wrap">
+          <div class="legend-title">Legend — สาเหตุ</div>
+          <div id="legend-causes" class="legend-grid"></div>
+        </div>
+      </div>
+      <div class="pie-card">
+        <h2>ฟีดเดอร์</h2>
+        <div class="chart-box pie"><canvas id="chart-feeders"></canvas></div>
+        <div class="legend-wrap">
+          <div class="legend-title">Legend — ฟีดเดอร์</div>
+          <div id="legend-feeders" class="legend-grid"></div>
+        </div>
+      </div>
+      <div class="pie-card">
+        <h2>เฟสที่ดับ</h2>
+        <div class="chart-box pie"><canvas id="chart-phases"></canvas></div>
+        <div class="legend-wrap">
+          <div class="legend-title">Legend — เฟส</div>
+          <div id="legend-phases" class="legend-grid"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const CAUSE_FALLBACK = {
+  "สภาพอากาศ":"#7c4dff","นก":"#40c4ff","กระรอก":"#ff9100","ต้นไม้":"#3fb950",
+  "ทางมะพร้าว":"#00e676","ไผ่":"#b388ff","อุปกรณ์ชำรุด":"#00e5ff","อุบัติเหตุ":"#ff5252",
+};
+const PHASE_FALLBACK = {
+  ALL:"#94a3b8", A:"#f85149", B:"#d29922", C:"#3fb950",
+  AB:"#ff6e40", BC:"#ffd600", CA:"#f06292",
+};
+const PHASE_LABEL_TH = {
+  ALL:"ทุกเฟส", A:"เฟส A", B:"เฟส B", C:"เฟส C",
+  AB:"เฟส AB", BC:"เฟส BC", CA:"เฟส CA",
+};
+
+let dashData = { months: [], causeColors: {}, feederColors: {}, phaseColors: {} };
+let selectedKey = null;
+let barChart = null;
+const pieCharts = { causes: null, feeders: null, phases: null };
+
+function causeColor(k){ return dashData.causeColors[k] || CAUSE_FALLBACK[k] || "#64748b"; }
+function feederColor(k){ return dashData.feederColors[k] || "#00e5ff"; }
+function phaseColor(k){ return dashData.phaseColors[k] || PHASE_FALLBACK[k] || "#64748b"; }
+function phaseLabel(k){ return PHASE_LABEL_TH[k] || `เฟส ${k}`; }
+
+function monthByKey(key){ return dashData.months.find(m => m.key === key); }
+
+function sortedKeys(breakdown){
+  return Object.keys(breakdown).sort((a, b) => breakdown[b] - breakdown[a]);
+}
+
+function buildBarChart(){
+  const ctx = document.getElementById("chart-monthly").getContext("2d");
+  if(barChart) barChart.destroy();
+  barChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: dashData.months.map(m => m.label),
+      datasets: [{
+        label: "เหตุการณ์ไฟเสีย",
+        data: dashData.months.map(m => m.count),
+        backgroundColor: dashData.months.map(m =>
+          m.key === selectedKey ? "rgba(124, 77, 255, 0.9)" : "rgba(0, 229, 255, 0.55)"
+        ),
+        hoverBackgroundColor: "rgba(0, 229, 255, 0.85)",
+        borderColor: "#00e5ff",
+        borderWidth: 1,
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.parsed.y} ครั้ง — คลิกเพื่อดูรายละเอียด`,
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: "#9da7b3", maxRotation: 45 }, grid: { color: "rgba(48,54,61,.6)" } },
+        y: {
+          beginAtZero: true,
+          ticks: { color: "#9da7b3", stepSize: 1 },
+          grid: { color: "rgba(48,54,61,.6)" },
+          title: { display: true, text: "จำนวนครั้ง", color: "#768390" },
+        },
+      },
+      onClick(evt, elements){
+        if(!elements.length) return;
+        selectMonth(dashData.months[elements[0].index].key);
+      },
+    },
+  });
+}
+
+function buildDoughnut(slot, canvasId, breakdown, colorFn, labelFn){
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  const keys = sortedKeys(breakdown);
+  if(pieCharts[slot]) pieCharts[slot].destroy();
+  if(!keys.length){ pieCharts[slot] = null; return; }
+  pieCharts[slot] = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: keys.map(labelFn),
+      datasets: [{
+        data: keys.map(k => breakdown[k]),
+        backgroundColor: keys.map(colorFn),
+        borderColor: "#161b22",
+        borderWidth: 2,
+        hoverOffset: 6,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: "55%",
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label(ctx){
+              const t = ctx.dataset.data.reduce((a, b) => a + b, 0);
+              const pct = t ? Math.round(ctx.parsed / t * 100) : 0;
+              return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+function renderLegend(elId, breakdown, colorFn, labelFn){
+  const el = document.getElementById(elId);
+  const keys = sortedKeys(breakdown);
+  const total = keys.reduce((s, k) => s + breakdown[k], 0);
+  if(!keys.length){
+    el.innerHTML = '<div class="empty-state" style="padding:12px;font-size:11px">ไม่มีข้อมูล</div>';
+    return;
+  }
+  el.innerHTML = keys.map(k => {
+    const n = breakdown[k];
+    const pct = total ? Math.round(n / total * 100) : 0;
+    return `<div class="legend-item">
+      <span class="legend-swatch" style="background:${colorFn(k)}"></span>
+      <span class="legend-name" title="${labelFn(k)}">${labelFn(k)}</span>
+      <span class="legend-meta">${n} · ${pct}%</span>
+    </div>`;
+  }).join("");
+}
+
+function updateMonthCharts(month){
+  buildDoughnut("causes", "chart-causes", month.byCause || {}, causeColor, k => k);
+  buildDoughnut("feeders", "chart-feeders", month.byFeeder || {}, feederColor, k => k);
+  buildDoughnut("phases", "chart-phases", month.byPhase || {}, phaseColor, phaseLabel);
+
+  renderLegend("legend-causes", month.byCause || {}, causeColor, k => k);
+  renderLegend("legend-feeders", month.byFeeder || {}, feederColor, k => k);
+  renderLegend("legend-phases", month.byPhase || {}, phaseColor, phaseLabel);
+}
+
+function selectMonth(key){
+  const month = monthByKey(key);
+  if(!month) return;
+  selectedKey = key;
+  const badge = document.getElementById("month-badge");
+  badge.textContent = `เดือนที่เลือก: ${month.label} — ${month.count} เหตุการณ์`;
+  badge.classList.remove("empty");
+  updateMonthCharts(month);
+  if(barChart){
+    barChart.data.datasets[0].backgroundColor = dashData.months.map(m =>
+      m.key === selectedKey ? "rgba(124, 77, 255, 0.9)" : "rgba(0, 229, 255, 0.55)"
+    );
+    barChart.update();
+  }
+}
+
+function showEmpty(){
+  document.getElementById("stats-row").style.display = "none";
+  document.getElementById("bar-section").innerHTML =
+    '<div class="empty-state">ยังไม่มีบันทึกเหตุการณ์ไฟเสีย<br><span>วางจุด Fault ที่หน้าแผนที่ (เลือกสาเหตุภาษาไทย) เพื่อสะสมข้อมูล</span></div>';
+  document.getElementById("pie-section").style.display = "none";
+}
+
+async function init(){
+  try{
+    dashData = await (await fetch("/api/outages/monthly")).json();
+  }catch(e){
+    console.error(e);
+    showEmpty();
+    return;
+  }
+  if(!dashData.months?.length){ showEmpty(); return; }
+
+  document.getElementById("stats-row").style.display = "flex";
+  document.getElementById("stat-total").textContent =
+    (dashData.totalOutages || 0).toLocaleString();
+  document.getElementById("stat-months").textContent =
+    dashData.months.length.toLocaleString();
+
+  buildBarChart();
+  selectMonth(dashData.months[dashData.months.length - 1].key);
+}
+
+init();
+</script>
+</body>
+</html>
