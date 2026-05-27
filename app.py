@@ -2,6 +2,14 @@
 PEA SPARK — Provincial Electricity Authority · Prachuap Khiri Khan
 GIS distribution-network operations dashboard.
 
+Primary runtime (canonical)
+---------------------------
+* Backend + routes : ``app.py``          → ``python app.py``
+* Map / operator UI: ``templates/indexpro.html`` (served at ``/`` after login)
+
+Other files (``apprun.py``, ``templates/indexrun.html``) are optional alternates;
+do not treat them as the source of truth when changing behaviour or UI.
+
 Architectural fixes applied (over original appdemo.py):
 
   R1  Feeders without any source CB (e.g. NA-side KUA07 / PDDA10F-*) were
@@ -38,10 +46,19 @@ Architectural fixes applied (over original appdemo.py):
       represents an external tie-feed and can switch it off.
 
   +   Pre-switching snapshot/restore on clear-fault.
-  +   /outage-polygon — convex hull around de-energized nodes.
+  +   /outage-polygon — fault-impact zone hull (only when a fault is active).
   +   /dashboard — outage history & stats per feeder / cause / phase
       backed by SQLite (no mock data, only real fault events get logged).
   +   Secrets (SESSION_SECRET, PEA_USERNAME, PEA_PASSWORD) via env.
+
+  R8  Cold start: every source CB (real + virtual) is forced CLOSED (status=1)
+      via ``apply_startup_cb_closed`` so all feeders have an energised seed.
+      GIS ``PRESENTPOS`` is not used for the initial operator view.
+
+  R9  Switching plan: Thai operator brief, per-step ``instructionTh``,
+      isolation/restoration sections, fault coords/cause/phase in the plan API.
+
+  R10 Fault placement by typed WGS84 coordinates (Lat/Lon) in addition to map click.
 """
 from __future__ import annotations
 import json
@@ -49,7 +66,7 @@ import math
 import os
 import sqlite3
 import time
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from threading import Lock
 
@@ -81,6 +98,73 @@ FEEDER_PALETTE = [
     "#00e5ff","#7c4dff","#ff9100","#00e676","#ff5252","#ffd600",
     "#40c4ff","#b388ff","#ff6e40","#69f0ae","#f06292","#ffab40",
 ]
+
+TH_MONTH_SHORT = [
+    "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+    "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค.",
+]
+
+# Canonical fault causes (Thai) — used in indexpro, dashboard, and SQLite records
+FAULT_CAUSES: tuple[str, ...] = (
+    "สภาพอากาศ",
+    "นก",
+    "กระรอก",
+    "ต้นไม้",
+    "ทางมะพร้าว",
+    "ไผ่",
+    "อุปกรณ์ชำรุด",
+    "อุบัติเหตุ",
+)
+
+CAUSE_CHART_COLORS: dict[str, str] = {
+    "สภาพอากาศ":   "#7c4dff",
+    "นก":          "#40c4ff",
+    "กระรอก":      "#ff9100",
+    "ต้นไม้":      "#3fb950",
+    "ทางมะพร้าว":  "#00e676",
+    "ไผ่":         "#b388ff",
+    "อุปกรณ์ชำรุด": "#00e5ff",
+    "อุบัติเหตุ":   "#ff5252",
+}
+
+# Map legacy English causes (old records) → new Thai labels for charts
+CAUSE_LEGACY_MAP: dict[str, str] = {
+    "Unknown":    "อุบัติเหตุ",
+    "Equipment":  "อุปกรณ์ชำรุด",
+    "Vegetation": "ต้นไม้",
+    "Weather":    "สภาพอากาศ",
+    "Animal":     "นก",
+    "Vehicle":    "อุบัติเหตุ",
+    "Human":      "อุบัติเหตุ",
+}
+
+PHASE_CHART_COLORS: dict[str, str] = {
+    "ALL": "#94a3b8",
+    "A":   "#f85149",
+    "B":   "#d29922",
+    "C":   "#3fb950",
+    "AB":  "#ff6e40",
+    "BC":  "#ffd600",
+    "CA":  "#f06292",
+}
+
+
+def normalize_cause(cause: str | None) -> str:
+    c = str(cause or "").strip()
+    if c in FAULT_CAUSES:
+        return c
+    if c in CAUSE_LEGACY_MAP:
+        return CAUSE_LEGACY_MAP[c]
+    return c if c else FAULT_CAUSES[0]
+
+
+def normalize_phase(phase: str | None) -> str:
+    p = str(phase or "ALL").strip().upper()
+    return p if p in PHASE_CHART_COLORS else "ALL"
+
+
+def _feeder_chart_color(feeder: str, index: int) -> str:
+    return FEEDER_PALETTE[index % len(FEEDER_PALETTE)]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Network state
@@ -123,6 +207,8 @@ class NetworkState:
         self.fault_feeder: str | None   = None
         self.fault_lat:    float | None = None
         self.fault_lon:    float | None = None
+        self.fault_cause:  str | None   = None
+        self.fault_phase:  str | None   = None
         self.fault_id:     int | None   = None
         self.fault_started_at: float | None = None
 
@@ -154,6 +240,66 @@ def find_nearest(s: NetworkState, x: float, y: float) -> str | None:
     if idx < 0 or idx >= len(s._kd_keys):
         return None
     return s._kd_keys[int(idx)]
+
+
+def apply_startup_cb_closed(s: NetworkState) -> None:
+    """At cold start every source CB (real + virtual) is CLOSED so each feeder
+    has an energised seed. GIS ``PRESENTPOS`` is ignored for the initial view;
+    toggles and fault snapshots still honour operator actions afterward."""
+    for fid in s.cb_status:
+        s.cb_status[fid] = 1
+    for feat in s.substations:
+        p = feat["properties"]
+        p["status"] = 1
+        p["state"] = "CLOSE"
+    s.snapshot_cb = dict(s.cb_status)
+
+
+def _add_virtual_source_cb(s: NetworkState, feeder: str) -> bool:
+    """Synthesise a tie-feed CB for feeders with conductors but no pscb record."""
+    if feeder in s.feeder_cbs or s.feeder_edge_count.get(feeder, 0) == 0:
+        return False
+    keys_in_f = s._feeder_keys.get(feeder, [])
+    if not keys_in_f:
+        return False
+    xs = sorted(s.node_xy[k][0] for k in keys_in_f)
+    ys = sorted(s.node_xy[k][1] for k in keys_in_f)
+    cx, cy = xs[len(xs) // 2], ys[len(ys) // 2]
+    rep_node = find_nearest_in_feeder(s, cx, cy, feeder, fallback=False)
+    if not rep_node:
+        rep_node = keys_in_f[len(keys_in_f) // 2]
+    rx, ry = s.node_xy[rep_node]
+    lon, lat = to_wgs(rx, ry)
+    vid = f"V-{feeder}"
+    s.substations.append({
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [lon, lat]},
+        "properties": {
+            "id": vid, "feeder": feeder,
+            "location": f"Tie-feed (virtual) · {feeder}",
+            "state": "CLOSE", "status": 1,
+            "tag": "VIRTUAL-CB", "opVolt": "",
+            "virtual": True,
+        },
+    })
+    s.cb_node[vid] = rep_node
+    s.cb_feeder[vid] = feeder
+    s.cb_status[vid] = 1
+    s.feeder_cbs.setdefault(feeder, set()).add(vid)
+    return True
+
+
+def ensure_all_feeders_have_source_cb(s: NetworkState) -> int:
+    """Second pass: guarantee every feeder with lines has ≥1 CB seed."""
+    added = 0
+    for feeder in sorted(s.feeder_edge_count):
+        if s.feeder_edge_count.get(feeder, 0) == 0:
+            continue
+        if s.feeder_cbs.get(feeder):
+            continue
+        if _add_virtual_source_cb(s, feeder):
+            added += 1
+    return added
 
 
 def find_nearest_in_feeder(
@@ -190,16 +336,7 @@ def build_state() -> NetworkState:
     trans_fc2 = load_json("natrans.json")
     all_trans = trans_fc1["features"] + trans_fc2["features"]
     pscb_fc = load_json("pscb.json")
-    # Force all breakers CLOSED at startup
     s.cb_status = {}
-
-    for cb in pscb_fc["features"]:
-      fid = cb["properties"].get("id")
-
-      if fid:
-        s.cb_status[fid] = 1
-
-    s.snapshot_cb = dict(s.cb_status)
     # Conductors
     for feat in all_conductor:
         geom = feat.get("geometry") or {}
@@ -328,47 +465,15 @@ def build_state() -> NetworkState:
         })
         s.cb_node[fid]   = nearest
         s.cb_feeder[fid] = feeder
-        s.cb_status[fid] = status  # R1: honour real PRESENTPOS, do NOT hard-code 1
+        s.cb_status[fid] = status  # overwritten by apply_startup_cb_closed()
         s.feeder_cbs.setdefault(feeder, set()).add(fid)
 
     # R7: Virtual source CBs for feeders that have no real CB in pscb.json.
-    # In the real network these feeders are tie-fed from a neighbouring
-    # substation (Kuiburi / NA-side bus). Without a seed node, BFS would
-    # mark the whole feeder dark and the operator would see lines that
-    # don't match the map. The virtual CB is a normal CB record so the
-    # operator can switch it OPEN/CLOSE in the UI exactly like a real one.
-    for feeder, edge_count in list(s.feeder_edge_count.items()):
-        if feeder in s.feeder_cbs or edge_count == 0:
-            continue
-        keys_in_f = s._feeder_keys.get(feeder, [])
-        if not keys_in_f:
-            continue
-        # Representative node = median X / median Y → snap back to the
-        # closest *real* node so the marker sits on conductor geometry.
-        xs = sorted(s.node_xy[k][0] for k in keys_in_f)
-        ys = sorted(s.node_xy[k][1] for k in keys_in_f)
-        cx, cy = xs[len(xs) // 2], ys[len(ys) // 2]
-        rep_node = find_nearest_in_feeder(s, cx, cy, feeder, fallback=False)
-        if not rep_node:
-            continue
-        rx, ry   = s.node_xy[rep_node]
-        lon, lat = to_wgs(rx, ry)
-        vid = f"V-{feeder}"
-        s.substations.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [lon, lat]},
-            "properties": {
-                "id": vid, "feeder": feeder,
-                "location": f"Tie-feed (virtual) · {feeder}",
-                "state": "CLOSE", "status": 1,
-                "tag": "VIRTUAL-CB", "opVolt": "",
-                "virtual": True,
-            },
-        })
-        s.cb_node[vid]   = rep_node
-        s.cb_feeder[vid] = feeder
-        s.cb_status[vid] = 1
-        s.feeder_cbs.setdefault(feeder, set()).add(vid)
+    for feeder in list(s.feeder_edge_count):
+        _add_virtual_source_cb(s, feeder)
+    virtual_added = ensure_all_feeders_have_source_cb(s)
+
+    apply_startup_cb_closed(s)
 
     # Reclosers
     for feat in all_recloser:
@@ -415,6 +520,12 @@ def build_state() -> NetworkState:
     print(f"  virtual CBs : "
           f"{sum(1 for cb in s.substations if cb['properties'].get('virtual')):,}",
           flush=True)
+    no_cb = [f for f in s.feeder_edge_count
+             if s.feeder_edge_count[f] > 0 and not s.feeder_cbs.get(f)]
+    if no_cb:
+        print(f"  WARNING feeders still without CB: {no_cb[:8]}", flush=True)
+    elif virtual_added:
+        print(f"  extra virtual CBs (2nd pass): {virtual_added}", flush=True)
     return s
 
 
@@ -445,7 +556,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS outage (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             feeder          TEXT    NOT NULL,
-            cause           TEXT    NOT NULL DEFAULT 'Unknown',
+            cause           TEXT    NOT NULL DEFAULT 'สภาพอากาศ',
             phase           TEXT    NOT NULL DEFAULT 'ALL',
             lat             REAL,
             lon             REAL,
@@ -558,9 +669,21 @@ def bfs_island(start, allowed, adjacency, removed) -> set[str]:
     return island
 
 
+def _format_fault_coords(lat: float | None, lon: float | None) -> str:
+    if lat is None or lon is None:
+        return "—"
+    return f"{lat:.6f}, {lon:.6f}"
+
+
+def _switch_instruction_th(action: str, switch_id: str, feeder: str, location: str) -> str:
+    verb = "เปิด" if action == "OPEN" else "ปิด"
+    loc = f" ({location})" if location else ""
+    return f"{verb}สวิตช์ {switch_id} · ฟีดเดอร์ {feeder}{loc}"
+
+
 def generate_switching_plan(s: NetworkState) -> dict:
     if not s.fault_node:
-        return {"error": "ไม่มี fault ที่ active กรุณากดปุ่ม Place fault ก่อน"}
+        return {"error": "ไม่มี fault ที่ active กรุณาวางจุดฟอลต์หรือระบุพิกัดก่อน"}
 
     all_nodes  = set(s.adjacency.keys())
     energized0 = compute_energization(s)
@@ -573,15 +696,7 @@ def generate_switching_plan(s: NetworkState) -> dict:
             "summary": "ทุก node มีไฟอยู่แล้ว ไม่ต้องทำ switching",
         }
 
-    removed0: set[str] = set()
-    if s.fault_node:
-        removed0.add(s.fault_node)
-    for fid, st in s.switch_status.items():
-        if st == 0 and fid in s.switch_node:
-            removed0.add(s.switch_node[fid])
-
-    fault_zone = bfs_island(s.fault_node, de_nodes0 | {s.fault_node},
-                            s.adjacency, removed0 - {s.fault_node})
+    fault_zone = compute_fault_affected_nodes(s)
 
     isolation_candidates: list[str] = []
     for fid, status in s.switch_status.items():
@@ -603,13 +718,17 @@ def generate_switching_plan(s: NetworkState) -> dict:
     iso_switches = isolation_candidates[:2]
 
     steps: list[dict] = []
-    for fid in iso_switches:
+    for iso_idx, fid in enumerate(iso_switches, start=1):
         sw_props = next((sw["properties"] for sw in s.switches if sw["properties"]["id"] == fid), {})
+        loc = sw_props.get("location", "")
+        feeder = sw_props.get("feeder", "?")
         steps.append({
             "action": "OPEN", "switchId": fid,
-            "feeder": sw_props.get("feeder", "?"),
-            "location": sw_props.get("location", ""),
-            "reason": "แยกจุดฟอลต์ออกจากระบบ (Fault Isolation)",
+            "section": "isolation",
+            "feeder": feeder,
+            "location": loc,
+            "instructionTh": _switch_instruction_th("OPEN", fid, feeder, loc),
+            "reason": f"ขั้นที่ {iso_idx} — แยกจุดฟอลต์ (Fault Isolation)",
             "nodesRestored": 0,
         })
 
@@ -660,6 +779,7 @@ def generate_switching_plan(s: NetworkState) -> dict:
     used_switches: set[str] = set()
     cumulative_sw = dict(sim_sw)
     cumulative_energized = set(energized_iso)
+    res_step_no = len(iso_switches)
 
     for item in sorted(restorable, key=lambda x: -x["size"]):
         sw_fid = item["switch"]
@@ -667,6 +787,7 @@ def generate_switching_plan(s: NetworkState) -> dict:
             continue
         used_switches.add(sw_fid)
         cumulative_sw[sw_fid] = 1
+        res_step_no += 1
 
         new_energized = compute_energization_ex(
             s.adjacency, s.node_feeder,
@@ -677,11 +798,15 @@ def generate_switching_plan(s: NetworkState) -> dict:
         cumulative_energized = new_energized
 
         sw_props = next((sw["properties"] for sw in s.switches if sw["properties"]["id"] == sw_fid), {})
+        loc = sw_props.get("location", "")
+        feeder = sw_props.get("feeder", "?")
         steps.append({
             "action": "CLOSE", "switchId": sw_fid,
-            "feeder": sw_props.get("feeder", "?"),
-            "location": sw_props.get("location", ""),
-            "reason": f"คืนไฟให้ {actually_restored:,} nodes (Service Restoration)",
+            "section": "restoration",
+            "feeder": feeder,
+            "location": loc,
+            "instructionTh": _switch_instruction_th("CLOSE", sw_fid, feeder, loc),
+            "reason": f"ขั้นที่ {res_step_no} — คืนไฟ {actually_restored:,} nodes",
             "nodesRestored": actually_restored,
         })
 
@@ -692,51 +817,127 @@ def generate_switching_plan(s: NetworkState) -> dict:
     nodes_irrecoverable = len(fault_zone)
     fault_pct = round(nodes_irrecoverable / max(1, len(all_nodes)) * 100, 2)
 
+    iso_count = sum(1 for st in steps if st["action"] == "OPEN")
+    res_count = sum(1 for st in steps if st["action"] == "CLOSE")
+    coords_txt = _format_fault_coords(s.fault_lat, s.fault_lon)
+    cause = normalize_cause(s.fault_cause)
+    phase = s.fault_phase or "ALL"
+    operator_brief = (
+        f"ฟีดเดอร์ {s.fault_feeder or '?'} · พิกัด {coords_txt} · "
+        f"สาเหตุ {cause} · เฟส {phase} · "
+        f"แยกฟอลต์ {iso_count} ขั้น · คืนไฟ {res_count} ขั้น"
+    )
+    next_step = steps[0] if steps else None
+    next_hint = (
+        next_step["instructionTh"]
+        if next_step
+        else "ไม่มีขั้นตอน — ตรวจสอบสถานะเครือข่าย"
+    )
+
     return {
         "steps":              steps,
         "faultFeeder":        s.fault_feeder,
         "faultLat":           s.fault_lat,
         "faultLon":           s.fault_lon,
+        "faultCoords":        coords_txt,
+        "faultCause":         cause,
+        "faultPhase":         phase,
+        "operatorBrief":      operator_brief,
+        "nextStepHint":       next_hint,
+        "isolationSteps":     iso_count,
+        "restorationSteps":   res_count,
         "faultZoneNodes":     nodes_irrecoverable,
         "faultZonePct":       fault_pct,
         "deenergizedNodes":   len(de_nodes0),
         "totalRestorable":    total_restorable,
         "nodesIrrecoverable": nodes_irrecoverable,
         "summary": (
-            f"ดับ {len(de_nodes0):,} nodes | "
-            f"fault zone {nodes_irrecoverable:,} nodes ({fault_pct}%) | "
-            f"แผน {len(steps)} ขั้นตอน | "
+            f"ดับ {len(de_nodes0):,} nodes · "
+            f"โซนฟอลต์ {nodes_irrecoverable:,} ({fault_pct}%) · "
+            f"แผน {len(steps)} ขั้น (แยก {iso_count} / คืน {res_count}) · "
             f"คืนไฟได้ {total_restorable:,} nodes"
         ),
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Outage polygon — convex hull of de-energized node coordinates
+# Fault-impact polygon — only after an active fault is placed
 # ─────────────────────────────────────────────────────────────────────────────
-def outage_polygon(s: NetworkState) -> dict | None:
+def compute_fault_affected_nodes(s: NetworkState) -> set[str]:
+    """De-energized island that contains the reported fault (not all dark nodes)."""
+    if not s.fault_node:
+        return set()
     energized = compute_energization(s)
-    de_keys   = [k for k in s.adjacency.keys() if k not in energized]
-    if len(de_keys) < 3:
+    de_nodes  = set(s.adjacency.keys()) - energized
+    removed: set[str] = set()
+    for fid, st in s.switch_status.items():
+        if st == 0 and fid in s.switch_node:
+            removed.add(s.switch_node[fid])
+    return bfs_island(
+        s.fault_node,
+        de_nodes | {s.fault_node},
+        s.adjacency,
+        removed,
+    )
+
+
+def _utm_ring_to_wgs_polygon(ring_utm: list[tuple[float, float]]) -> list[list[float]]:
+    ring_wgs = [list(to_wgs(x, y)) for x, y in ring_utm]
+    if ring_wgs and ring_wgs[0] != ring_wgs[-1]:
+        ring_wgs.append(ring_wgs[0])
+    return ring_wgs
+
+
+def _buffer_ring_utm(cx: float, cy: float, radius_m: float, sides: int = 24) -> list[tuple[float, float]]:
+    return [
+        (cx + radius_m * math.cos(2 * math.pi * i / sides),
+         cy + radius_m * math.sin(2 * math.pi * i / sides))
+        for i in range(sides)
+    ]
+
+
+def _polygon_ring_from_utm_points(pts_utm: np.ndarray, min_radius_m: float = 60.0) -> list[list[float]] | None:
+    if len(pts_utm) == 0:
         return None
-    pts_utm = np.array([s.node_xy[k] for k in de_keys if k in s.node_xy],
-                       dtype=np.float64)
     if len(pts_utm) < 3:
-        return None
-    # Convex hull via scipy
+        cx, cy = float(pts_utm[:, 0].mean()), float(pts_utm[:, 1].mean())
+        spread = float(np.max(np.linalg.norm(pts_utm - np.array([cx, cy]), axis=1))) if len(pts_utm) > 1 else 0.0
+        radius = max(min_radius_m, spread + 40.0)
+        ring_utm = _buffer_ring_utm(cx, cy, radius)
+        return _utm_ring_to_wgs_polygon(ring_utm)
     try:
         from scipy.spatial import ConvexHull
         hull = ConvexHull(pts_utm)
         ring_utm = pts_utm[hull.vertices].tolist()
     except Exception:
+        cx, cy = float(pts_utm[:, 0].mean()), float(pts_utm[:, 1].mean())
+        ring_utm = _buffer_ring_utm(cx, cy, min_radius_m * 2)
+    return _utm_ring_to_wgs_polygon(ring_utm)
+
+
+def outage_polygon(s: NetworkState) -> dict | None:
+    """Convex hull around nodes impacted by the active fault only."""
+    if not s.fault_node:
         return None
-    ring_wgs = [list(to_wgs(x, y)) for x, y in ring_utm]
-    if ring_wgs and ring_wgs[0] != ring_wgs[-1]:
-        ring_wgs.append(ring_wgs[0])
+    affected = compute_fault_affected_nodes(s)
+    if not affected:
+        return None
+    keys = [k for k in affected if k in s.node_xy]
+    if not keys:
+        return None
+    pts_utm = np.array([s.node_xy[k] for k in keys], dtype=np.float64)
+    ring_wgs = _polygon_ring_from_utm_points(pts_utm)
+    if not ring_wgs:
+        return None
     return {
         "type": "Feature",
         "geometry": {"type": "Polygon", "coordinates": [ring_wgs]},
-        "properties": {"nodesAffected": len(de_keys)},
+        "properties": {
+            "nodesAffected": len(keys),
+            "faultFeeder":   s.fault_feeder,
+            "faultCoords":   _format_fault_coords(s.fault_lat, s.fault_lon),
+            "zone":          "fault-impact",
+        },
     }
 
 
@@ -808,16 +1009,7 @@ def feeders():
 @app.route("/substations")
 def substations():
     s = get_state()
-
-    # Force default CLOSE for every breaker
-    for sub in s.substations:
-        fid = sub["properties"]["id"]
-
-        if fid not in s.cb_status:
-            s.cb_status[fid] = 1
-
     out = []
-
     for sub in s.substations:
         fid    = sub["properties"]["id"]
         status = s.cb_status.get(fid, 1)
@@ -845,8 +1037,11 @@ def scada():
     return jsonify({
         "faultActive":       bool(s.fault_node),
         "faultFeeder":       s.fault_feeder,
-        "faultLat":          s.fault_lat,        # R5: include for hydration
-        "faultLon":          s.fault_lon,        # R5: include for hydration
+        "faultLat":          s.fault_lat,
+        "faultLon":          s.fault_lon,
+        "faultCoords":       _format_fault_coords(s.fault_lat, s.fault_lon),
+        "faultCause":        s.fault_cause,
+        "faultPhase":        s.fault_phase,
         "switchOpen":        sum(1 for v in s.switch_status.values() if v == 0),
         "switchTotal":       len(s.switch_status),
         "cbOpen":            sum(1 for v in s.cb_status.values() if v == 0),
@@ -908,13 +1103,17 @@ def set_fault():
     s    = get_state()
     data = request.get_json(force=True) or {}
     lat, lon = float(data["lat"]), float(data["lon"])
-    cause = str(data.get("cause", "Unknown"))
-    phase = str(data.get("phase", "ALL"))
+    cause = normalize_cause(str(data.get("cause", FAULT_CAUSES[0])))
+    phase = normalize_phase(str(data.get("phase", "ALL")))
 
     xu, yu  = to_utm(lon, lat)
     nearest = find_nearest(s, xu, yu)
     if not nearest:
-        return jsonify({"active": False, "feeder": None, "lat": None, "lon": None})
+        return jsonify({
+            "active": False,
+            "error": "ไม่พบโหนดเครือข่ายใกล้พิกัดนี้ — ลองเลื่อนพิกัดให้ใกล้สายจำหน่าย",
+            "feeder": None, "lat": None, "lon": None,
+        })
 
     # Snapshot the pre-fault switching state BEFORE the operator starts
     # isolating / restoring, so /fault DELETE can roll us back cleanly.
@@ -924,6 +1123,8 @@ def set_fault():
     s.fault_feeder = s.node_feeder.get(nearest, "UNK")
     s.fault_lat    = lat
     s.fault_lon    = lon
+    s.fault_cause  = cause
+    s.fault_phase  = phase
     s.fault_started_at = time.time()
 
     # Record outage in SQLite (real event, no mock data)
@@ -963,6 +1164,7 @@ def clear_fault():
         db.commit()
 
     s.fault_node = s.fault_feeder = s.fault_lat = s.fault_lon = None
+    s.fault_cause = s.fault_phase = None
     s.fault_id = None
     s.fault_started_at = None
 
@@ -976,8 +1178,12 @@ def clear_fault():
 @app.route("/fault", methods=["GET"])
 def get_fault():
     s = get_state()
-    return jsonify({"active": bool(s.fault_node), "feeder": s.fault_feeder,
-                    "lat": s.fault_lat, "lon": s.fault_lon})
+    return jsonify({
+        "active": bool(s.fault_node), "feeder": s.fault_feeder,
+        "lat": s.fault_lat, "lon": s.fault_lon,
+        "coords": _format_fault_coords(s.fault_lat, s.fault_lon),
+        "cause": s.fault_cause, "phase": s.fault_phase,
+    })
 
 
 @app.route("/switching-plan", methods=["POST"])
@@ -1000,6 +1206,78 @@ def execute_step(step_idx: int):
 
 
 # ── Dashboard ───────────────────────────────────────────────────────────────
+def _cause_chart_color(cause: str) -> str:
+    return CAUSE_CHART_COLORS.get(normalize_cause(cause), "#64748b")
+
+
+@app.route("/api/outages/monthly")
+def api_outages_monthly():
+    """Monthly outage counts + per-cause breakdown for dashboard charts."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT cause, feeder, phase, started_at FROM outage ORDER BY started_at ASC"
+    ).fetchall()
+
+    by_month: dict[str, dict] = defaultdict(
+        lambda: {
+            "count": 0,
+            "byCause": defaultdict(int),
+            "byFeeder": defaultdict(int),
+            "byPhase": defaultdict(int),
+        }
+    )
+    for r in rows:
+        dt = datetime.fromtimestamp(float(r["started_at"]), tz=timezone.utc)
+        key = f"{dt.year:04d}-{dt.month:02d}"
+        cause  = normalize_cause(r["cause"])
+        feeder = str(r["feeder"] or "UNK")
+        phase  = normalize_phase(r["phase"])
+        by_month[key]["count"] += 1
+        by_month[key]["byCause"][cause] += 1
+        by_month[key]["byFeeder"][feeder] += 1
+        by_month[key]["byPhase"][phase] += 1
+
+    all_feeders: set[str] = set()
+    months: list[dict] = []
+    for key in sorted(by_month.keys()):
+        y, m = int(key[:4]), int(key[5:7])
+        by_cause  = dict(by_month[key]["byCause"])
+        by_feeder = dict(by_month[key]["byFeeder"])
+        by_phase  = dict(by_month[key]["byPhase"])
+        all_feeders.update(by_feeder.keys())
+        months.append({
+            "key":      key,
+            "label":    f"{TH_MONTH_SHORT[m - 1]} {y + 543}",
+            "labelEn":  f"{TH_MONTH_SHORT[m - 1]} {y}",
+            "year":     y,
+            "month":    m,
+            "count":    by_month[key]["count"],
+            "byCause":  by_cause,
+            "byFeeder": by_feeder,
+            "byPhase":  by_phase,
+        })
+
+    feeders_sorted = sorted(all_feeders)
+    feeder_colors = {
+        f: _feeder_chart_color(f, i) for i, f in enumerate(feeders_sorted)
+    }
+    all_phases = sorted(
+        {p for mo in months for p in mo["byPhase"]},
+        key=lambda p: (p != "ALL", p),
+    )
+
+    return jsonify({
+        "months":        months,
+        "causes":        list(FAULT_CAUSES),
+        "causeColors":   dict(CAUSE_CHART_COLORS),
+        "feeders":       feeders_sorted,
+        "feederColors":  feeder_colors,
+        "phases":        all_phases,
+        "phaseColors":   {p: PHASE_CHART_COLORS.get(p, "#64748b") for p in all_phases},
+        "totalOutages":  sum(mo["count"] for mo in months),
+    })
+
+
 @app.route("/dashboard")
 def dashboard():
     redir = _require_login()
@@ -1094,6 +1372,7 @@ def logout():
 
 @app.route("/")
 def index():
+    """Main operator dashboard — UI lives in templates/indexpro.html."""
     redir = _require_login()
     if redir:
         return redir
@@ -1110,5 +1389,6 @@ if __name__ == "__main__":
     init_db()
     get_state()
     port = int(os.environ.get("PORT", "5000"))
-    print(f"\nSERVER READY → http://0.0.0.0:{port}\n", flush=True)
+    print(f"\nSERVER READY → http://0.0.0.0:{port}", flush=True)
+    print("  UI: templates/indexpro.html\n", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
