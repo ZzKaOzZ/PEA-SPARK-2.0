@@ -212,16 +212,7 @@ button:disabled{opacity:.35;cursor:default}
       <div id="fault-banner">⚠ คลิกแผนที่ หรือกรอกพิกัด WGS84 — เลือกสาเหตุ/เฟสก่อนวางจุดฟอลต์</div>
       <div id="fault-form">
         <label>สาเหตุ (Cause)</label>
-        <select id="ff-cause">
-          <option>สภาพอากาศ</option>
-          <option>นก</option>
-          <option>กระรอก</option>
-          <option>ต้นไม้</option>
-          <option>ทางมะพร้าว</option>
-          <option>ไผ่</option>
-          <option>อุปกรณ์ชำรุด</option>
-          <option>อุบัติเหตุ</option>
-        </select>
+        <select id="ff-cause"></select>
         <label>เฟส (Phase)</label>
         <select id="ff-phase">
           <option>ALL</option><option>A</option><option>B</option><option>C</option>
@@ -338,11 +329,19 @@ const lyr = {
 const j = url => fetch(url).then(r=>r.json());
 const post = (url,body={}) => fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json());
 
+function fillCauseOptions(causes){
+  const sel=document.getElementById("ff-cause");
+  if(!sel||!causes?.length) return;
+  sel.innerHTML=causes.map(c=>`<option>${c}</option>`).join("");
+}
+
 async function loadAll(){
-  const [co,sw,rc,xf,sub,fd,sc,op] = await Promise.all([
+  const [co,sw,rc,xf,sub,fd,sc,op,fc] = await Promise.all([
     j("/conductor"),j("/switches"),j("/reclosers"),
     j("/transformers"),j("/substations"),j("/feeders"),j("/scada"),j("/outage-polygon"),
+    j("/api/fault-causes"),
   ]);
+  fillCauseOptions(fc.causes);
   D.conductors=co.features; D.switches=sw.features; D.reclosers=rc.features;
   D.transformers=xf.features; D.substations=sub.features;
   D.feeders=fd.feeders; D.scada=sc; D.outagePoly=op;
