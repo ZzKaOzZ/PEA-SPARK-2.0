@@ -1,0 +1,14 @@
+{
+  "sourceCrs": "EPSG:32647",
+  "nodeKeyDecimals": 1,
+  "cbMaxGeoSnapM": 200,
+  "cbSkipBeyondM": 8000,
+  "comment": "ไฟล์รวม 1 ไฟล์ต่อประเภท (export GeoJSON UTM 47N). cbMaxGeoSnapM=ระยะที่ถือว่า CB อยู่บนสายจริง; เกินนั้น snap ไปจุดใกล้สุดบนฟีดเดอร์ที่จ่าย (tie-feed ไม่มีสายเชื่อม)",
+  "layers": {
+    "conductors": ["conducps.json"],
+    "switches": ["dofps.json"],
+    "reclosers": ["recloserps.json"],
+    "transformers": ["transps.json"],
+    "substations": ["cball.json"]
+  }
+}

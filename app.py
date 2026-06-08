@@ -51,9 +51,9 @@ Architectural fixes applied (over original appdemo.py):
       backed by SQLite (no mock data, only real fault events get logged).
   +   Secrets (SESSION_SECRET, PEA_USERNAME, PEA_PASSWORD) via env.
 
-  R8  Cold start: every source CB (real + virtual) is forced CLOSED (status=1)
-      via ``apply_startup_cb_closed`` so all feeders have an energised seed.
-      GIS ``PRESENTPOS`` is not used for the initial operator view.
+  R8  Cold start: every source CB (real + virtual) is forced CLOSED via
+      ``apply_startup_cb_closed``.  Switches honour GIS ``PRESENTPOS`` from
+      dofps.json; ``deviceClass`` splits F-coded dropouts from other switches.
 
   R9  Switching plan: Thai operator brief, per-step ``instructionTh``,
       isolation/restoration sections, fault coords/cause/phase in the plan API.
@@ -64,10 +64,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sqlite3
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 
 import numpy as np
@@ -77,27 +78,97 @@ from flask import (
 from pyproj import Transformer
 from scipy.spatial import cKDTree
 
-# ── Coordinate transforms ────────────────────────────────────────────────────
-_TRANSFORMER     = Transformer.from_crs("EPSG:24047", "EPSG:4326", always_xy=True)
-_TRANSFORMER_INV = Transformer.from_crs("EPSG:4326", "EPSG:24047", always_xy=True)
+# ── Paths & network config ───────────────────────────────────────────────────
+_HERE    = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(_HERE, "data")
+DB_PATH  = os.path.join(DATA_DIR, "outages.db")
+
+_DEFAULT_NETWORK_CONFIG: dict = {
+    "sourceCrs": "EPSG:32647",
+    "nodeKeyDecimals": 1,
+    "layers": {
+        "conductors":   ["conducps.json"],
+        "switches":     ["dofps.json"],
+        "reclosers":    ["recloserps.json"],
+        "transformers": ["transps.json"],
+        "substations":  ["cball.json"],
+    },
+}
+
+
+def load_network_config() -> dict:
+    """Read ``data/network_config.json`` — layer filenames + source CRS."""
+    path = os.path.join(DATA_DIR, "network_config.json")
+    if not os.path.exists(path):
+        return dict(_DEFAULT_NETWORK_CONFIG)
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    layers = {**_DEFAULT_NETWORK_CONFIG["layers"], **(raw.get("layers") or {})}
+    return {
+        "sourceCrs":       raw.get("sourceCrs", _DEFAULT_NETWORK_CONFIG["sourceCrs"]),
+        "nodeKeyDecimals": int(raw.get("nodeKeyDecimals", _DEFAULT_NETWORK_CONFIG["nodeKeyDecimals"])),
+        "cbMaxGeoSnapM":   float(raw.get("cbMaxGeoSnapM", 200)),
+        "cbSkipBeyondM":   float(raw.get("cbSkipBeyondM", 8000)),
+        "layers":          layers,
+    }
+
+
+def _detect_crs_from_prj() -> str | None:
+    for name in ("psconductor.prj", "pscb.prj", "DOF.prj"):
+        path = os.path.join(DATA_DIR, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            text = f.read().upper()
+        if "WGS_1984_UTM_ZONE_47" in text or "WGS 84 / UTM ZONE 47" in text:
+            return "EPSG:32647"
+        if "INDIAN_1975" in text or "EVEREST" in text:
+            return "EPSG:24047"
+    return None
+
+
+_NETWORK_CFG = load_network_config()
+_SOURCE_CRS  = _NETWORK_CFG.get("sourceCrs") or _detect_crs_from_prj() or "EPSG:32647"
+_NODE_DECIMALS = max(0, int(_NETWORK_CFG.get("nodeKeyDecimals", 1)))
+_CB_MAX_GEO_SNAP = float(_NETWORK_CFG.get("cbMaxGeoSnapM", 200))
+_CB_SKIP_BEYOND  = float(_NETWORK_CFG.get("cbSkipBeyondM", 8000))
+
+# ── Coordinate transforms (must match GIS export CRS) ────────────────────────
+_TRANSFORMER     = Transformer.from_crs(_SOURCE_CRS, "EPSG:4326", always_xy=True)
+_TRANSFORMER_INV = Transformer.from_crs("EPSG:4326", _SOURCE_CRS, always_xy=True)
+
 
 def to_wgs(x: float, y: float) -> tuple[float, float]:
     lon, lat = _TRANSFORMER.transform(x, y)
     return lon, lat
 
+
 def to_utm(lon: float, lat: float) -> tuple[float, float]:
     x, y = _TRANSFORMER_INV.transform(lon, lat)
     return x, y
-
-# ── Paths ────────────────────────────────────────────────────────────────────
-_HERE    = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(_HERE, "data")
-DB_PATH  = os.path.join(DATA_DIR, "outages.db")
 
 FEEDER_PALETTE = [
     "#00e5ff","#7c4dff","#ff9100","#00e676","#ff5252","#ffd600",
     "#40c4ff","#b388ff","#ff6e40","#69f0ae","#f06292","#ffab40",
 ]
+
+# Fixed colours so feeders never share a hue on the map (e.g. PDA10 ≠ KUA01).
+FEEDER_COLOR_MAP: dict[str, str] = {
+    "KUA01": "#22d3ee",
+    "KUA02": "#7c4dff",
+    "KUA07": "#ff9100",
+    "PDA01": "#00e676",
+    "PDA02": "#ff5252",
+    "PDA03": "#ffd600",
+    "PDA04": "#40c4ff",
+    "PDA05": "#b388ff",
+    "PDA06": "#ff6e40",
+    "PDA07": "#69f0ae",
+    "PDA08": "#f06292",
+    "PDA09": "#ffab40",
+    "PDA10": "#e879f9",
+    "PKK-2": "#c4b5fd",
+}
 
 TH_MONTH_SHORT = [
     "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
@@ -228,8 +299,72 @@ def load_json(filename: str) -> dict:
         return json.load(f)
 
 
+def load_layer_features(layer_key: str) -> list[dict]:
+    """Load and merge GeoJSON features listed under ``layers[layer_key]`` in config."""
+    cfg = _NETWORK_CFG.get("layers") or _DEFAULT_NETWORK_CONFIG["layers"]
+    names = cfg.get(layer_key) or []
+    features: list[dict] = []
+    for name in names:
+        fc = load_json(name)
+        features.extend(fc.get("features", []))
+    return features
+
+
 def node_key(x: float, y: float) -> str:
-    return f"{round(x * 1e4) / 1e4}|{round(y * 1e4) / 1e4}"
+    """Snap endpoints to a grid so T-junctions in GIS connect in the graph."""
+    if _NODE_DECIMALS <= 0:
+        return f"{round(x)}|{round(y)}"
+    factor = 10 ** _NODE_DECIMALS
+    return f"{round(x * factor) / factor}|{round(y * factor) / factor}"
+
+
+def open_switch_nodes(s: NetworkState) -> set[str]:
+    return {
+        s.switch_node[fid]
+        for fid, st in s.switch_status.items()
+        if st == 0 and fid in s.switch_node
+    }
+
+
+def _dist2_point_segment(
+    px: float, py: float, ax: float, ay: float, bx: float, by: float,
+) -> tuple[float, float, float]:
+    dx, dy = bx - ax, by - ay
+    len2 = dx * dx + dy * dy
+    if len2 < 1e-12:
+        return (px - ax) ** 2 + (py - ay) ** 2, ax, ay
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2))
+    qx, qy = ax + t * dx, ay + t * dy
+    return (px - qx) ** 2 + (py - qy) ** 2, qx, qy
+
+
+def find_nearest_conductor_snap(
+    s: NetworkState, x: float, y: float,
+) -> tuple[str | None, str | None]:
+    """Nearest point on any conductor segment → (feeder, graph node key)."""
+    best_d2 = float("inf")
+    best_feeder: str | None = None
+    best_node: str | None = None
+
+    for keys, cw in zip(s.conductor_keys, s.conductor_wgs):
+        feeder = str(cw["properties"].get("feeder", "UNK"))
+        for i in range(len(keys)):
+            k1 = keys[i]
+            x1, y1 = s.node_xy[k1]
+            d2, _, _ = _dist2_point_segment(x, y, x1, y1, x1, y1)
+            if d2 < best_d2:
+                best_d2, best_feeder, best_node = d2, feeder, k1
+            if i + 1 < len(keys):
+                k2 = keys[i + 1]
+                x2, y2 = s.node_xy[k2]
+                d2, qx, qy = _dist2_point_segment(x, y, x1, y1, x2, y2)
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best_feeder = feeder
+                    near = find_nearest_in_feeder(s, qx, qy, feeder, fallback=False)
+                    best_node = near or k1
+
+    return best_feeder, best_node
 
 
 def find_nearest(s: NetworkState, x: float, y: float) -> str | None:
@@ -253,6 +388,11 @@ def apply_startup_cb_closed(s: NetworkState) -> None:
         p["status"] = 1
         p["state"] = "CLOSE"
     s.snapshot_cb = dict(s.cb_status)
+
+
+def switch_device_class(facility_id: str) -> str:
+    """FACILITYID containing ``f`` → dropout (fuse cutout); otherwise switch."""
+    return "dropout" if "f" in facility_id.lower() else "switch"
 
 
 def _add_virtual_source_cb(s: NetworkState, feeder: str) -> bool:
@@ -302,6 +442,125 @@ def ensure_all_feeders_have_source_cb(s: NetworkState) -> int:
     return added
 
 
+def resolve_cb_supply_feeder(
+    facility_id: str, declared: str, conductor_feeders: set[str],
+) -> str | None:
+    """Map a cball record to the feeder it energises on the conductor mesh."""
+    decl = (declared or "").strip()
+    if decl in conductor_feeders:
+        return decl
+    fid = facility_id.upper()
+
+    m = re.match(r"^(PDA|KUA)(\d{2})VB", fid)
+    if m:
+        cand = f"{m.group(1)}{m.group(2)}"
+        if cand in conductor_feeders:
+            return cand
+
+    # KUA0BVB = bus 0 at the substation → energises KUA01 (not KUA00).
+    if fid.startswith("KUA0BVB") and "KUA01" in conductor_feeders:
+        return "KUA01"
+
+    m = re.match(r"^KUA(\d)[BC]VB", fid)
+    if m:
+        n = int(m.group(1))
+        if n == 0:
+            cand = "KUA01"
+        else:
+            cand = f"KUA0{n}"
+        if cand in conductor_feeders:
+            return cand
+
+    m = re.match(r"^KUA(\d)TVB", fid)
+    if m:
+        cand = f"KUA0{m.group(1)}"
+        if cand in conductor_feeders:
+            return cand
+
+    if fid.startswith("PDA0BVB") and "PDA05" in conductor_feeders:
+        return "PDA05"
+
+    if decl == "PKK-2" and "PKK-2" in conductor_feeders:
+        return "PKK-2"
+
+    m = re.match(r"^(PDA|KUA)(\d+)", decl, re.I)
+    if m:
+        cand = f"{m.group(1).upper()}{int(m.group(2)):02d}"
+        if cand in conductor_feeders:
+            return cand
+
+    return None
+
+
+def is_tie_cb_marker(facility_id: str, props: dict) -> bool:
+    """True when GIS marks an external / tie-feed source (no tie-line drawn)."""
+    if str(props.get("INTERRUPTI", "")).upper() == "V":
+        return True
+    fid = facility_id.upper()
+    return any(tag in fid for tag in ("BVB", "CVB", "TVB"))
+
+
+def snap_cb_to_feeder(
+    s: NetworkState, x: float, y: float, feeder: str,
+) -> tuple[str | None, float]:
+    """Nearest graph node on ``feeder`` and planar distance in metres (UTM)."""
+    node = find_nearest_in_feeder(s, x, y, feeder, fallback=False)
+    if not node:
+        return None, float("inf")
+    nx, ny = s.node_xy[node]
+    dist = math.hypot(nx - x, ny - y)
+    return node, dist
+
+
+def _pda_substation_hub_xy(
+    s: NetworkState, hub_nodes: dict[str, list[str]],
+) -> tuple[float, float] | None:
+    """UTM centroid of on-line PDA source CBs (main substation bus)."""
+    refs: list[tuple[float, float]] = []
+    for feeder in ("PDA05", "PDA07", "PDA10", "PDA02", "PDA01"):
+        for node in hub_nodes.get(feeder, []):
+            refs.append(s.node_xy[node])
+    if not refs:
+        return None
+    return (
+        sum(p[0] for p in refs) / len(refs),
+        sum(p[1] for p in refs) / len(refs),
+    )
+
+
+def snap_cb_graph_node(
+    s: NetworkState,
+    x: float,
+    y: float,
+    supply: str,
+    geo_dist: float,
+    hub_nodes: dict[str, list[str]],
+) -> str | None:
+    """BFS seed for a source CB.
+
+    On-line CBs snap to the nearest conductor node.  Remote tie-feed CBs snap
+    to the substation hub when that feeder already has an on-line CB, so power
+    enters from the source end — not the far tie-in point.
+
+    KUA feeders with only off-line tie CBs (e.g. KUA01VB 6 km from the mesh)
+    seed at the nearest node to the main PDA substation bus instead of the
+    remote GIS marker, so the feeder lights from the grid interconnect."""
+    if geo_dist <= _CB_MAX_GEO_SNAP:
+        node, _ = snap_cb_to_feeder(s, x, y, supply)
+        return node
+    hubs = hub_nodes.get(supply) or []
+    if hubs:
+        hx = sum(s.node_xy[n][0] for n in hubs) / len(hubs)
+        hy = sum(s.node_xy[n][1] for n in hubs) / len(hubs)
+        return find_nearest_in_feeder(s, hx, hy, supply, fallback=False)
+    if supply.startswith("KUA"):
+        ref = _pda_substation_hub_xy(s, hub_nodes)
+        if ref:
+            return find_nearest_in_feeder(s, ref[0], ref[1], supply, fallback=False)
+    node, _ = snap_cb_to_feeder(s, x, y, supply)
+    return node
+
+
 def find_nearest_in_feeder(
     s: NetworkState, x: float, y: float,
     feeder: str | None, fallback: bool = True,
@@ -322,20 +581,13 @@ def find_nearest_in_feeder(
 def build_state() -> NetworkState:
     s = NetworkState()
     print("กำลังโหลดข้อมูลเครือข่าย…", flush=True)
+    print(f"  CRS: {_SOURCE_CRS} · node snap: 10^-{_NODE_DECIMALS} m", flush=True)
 
-    conductor_fc1 = load_json("psconductor.json")
-    conductor_fc2 = load_json("naconductor.json")
-    all_conductor = conductor_fc1["features"] + conductor_fc2["features"]
-    dof_fc1 = load_json("DOF.json")
-    dof_fc2 = load_json("naDOF.json")
-    all_dof = dof_fc1["features"] + dof_fc2["features"]
-    recloser_fc1 = load_json("psrecloser.json")
-    recloser_fc2 = load_json("narecloser.json")
-    all_recloser = recloser_fc1["features"] + recloser_fc2["features"]
-    trans_fc1 = load_json("pstrans.json")
-    trans_fc2 = load_json("natrans.json")
-    all_trans = trans_fc1["features"] + trans_fc2["features"]
-    pscb_fc = load_json("pscb.json")
+    all_conductor = load_layer_features("conductors")
+    all_dof       = load_layer_features("switches")
+    all_recloser  = load_layer_features("reclosers")
+    all_trans     = load_layer_features("transformers")
+    pscb_fc       = {"features": load_layer_features("substations")}
     s.cb_status = {}
     # Conductors
     for feat in all_conductor:
@@ -398,7 +650,7 @@ def build_state() -> NetworkState:
 
     feeders = sorted(s.feeder_edge_count.keys())
     for i, f in enumerate(feeders):
-        s.feeder_color[f] = FEEDER_PALETTE[i % len(FEEDER_PALETTE)]
+        s.feeder_color[f] = FEEDER_COLOR_MAP.get(f) or FEEDER_PALETTE[i % len(FEEDER_PALETTE)]
     for cw in s.conductor_wgs:
         cw["properties"]["color"] = s.feeder_color.get(cw["properties"]["feeder"], "#888")
 
@@ -409,7 +661,7 @@ def build_state() -> NetworkState:
             continue
         props = feat.get("properties") or {}
         fid   = str(props.get("FACILITYID", ""))
-        if not fid or "S" not in fid.upper():
+        if not fid:
             continue
         x, y    = float(geom["coordinates"][0]), float(geom["coordinates"][1])
         status  = 0 if int(props.get("PRESENTPOS", 1)) == 0 else 1
@@ -421,8 +673,14 @@ def build_state() -> NetworkState:
         if not nearest:
             continue
         feeder  = decl_feeder or s.node_feeder.get(nearest, "UNK")
+        device  = switch_device_class(fid)
         subtype = int(props.get("SUBTYPECOD", 0))
-        kind    = {5: "Load Break", 3: "Disconnect", 2: "Fuse"}.get(subtype, "Switch")
+        if device == "dropout":
+            kind = "Dropout"
+        else:
+            kind = {5: "Load Break", 3: "Disconnect", 2: "Fuse", 10: "Sectionaliser"}.get(
+                subtype, "Switch",
+            )
         lon, lat = to_wgs(x, y)
         s.switches.append({
             "type": "Feature",
@@ -430,50 +688,83 @@ def build_state() -> NetworkState:
             "properties": {
                 "id": fid, "feeder": feeder, "location": str(props.get("LOCATION", "")),
                 "state": "CLOSE" if status == 1 else "OPEN", "status": status, "kind": kind,
+                "deviceClass": device,
+                "presentPos": int(props.get("PRESENTPOS", 1)),
             },
         })
         s.switch_node[fid]   = nearest
         s.switch_status[fid] = status
 
-    # Substations (source CBs)
+    # Substations (source CBs) — cball.json may place tie-feeds off the line mesh.
+    conductor_feeders = set(s.feeder_edge_count.keys())
+    cb_skipped_remote = 0
+    cb_pending: list[dict] = []
     for feat in pscb_fc.get("features", []):
         geom = feat.get("geometry") or {}
         if geom.get("type") != "Point":
             continue
-        props   = feat.get("properties") or {}
-        fid     = str(props.get("FACILITYID", props.get("TAG", "")))
+        props  = feat.get("properties") or {}
+        fid    = str(props.get("FACILITYID", props.get("TAG", "")))
         if not fid:
             continue
-        x, y    = float(geom["coordinates"][0]), float(geom["coordinates"][1])
-        status  = 0 if int(props.get("PRESENTPOS", 1)) == 0 else 1
-        feeder  = str(props.get("FEEDERID", "UNK"))
-        # R6: snap CB into its declared feeder. Falls back to global tree
-        # if the feeder has no conductors (e.g. PDA0B which is a stub).
-        nearest = find_nearest_in_feeder(s, x, y, feeder)
-        if not nearest:
+        x, y   = float(geom["coordinates"][0]), float(geom["coordinates"][1])
+        status = 0 if int(props.get("PRESENTPOS", 1)) == 0 else 1
+        declared = str(props.get("FEEDERID", "") or "").strip()
+        supply   = resolve_cb_supply_feeder(fid, declared, conductor_feeders)
+        if not supply:
+            cb_skipped_remote += 1
             continue
+        _, geo_dist = snap_cb_to_feeder(s, x, y, supply)
+        if geo_dist > _CB_SKIP_BEYOND:
+            cb_skipped_remote += 1
+            continue
+        cb_pending.append({
+            "fid": fid, "x": x, "y": y, "status": status, "supply": supply,
+            "geo_dist": geo_dist, "props": props,
+        })
+
+    cb_pending.sort(key=lambda r: r["geo_dist"])
+    hub_nodes: dict[str, list[str]] = defaultdict(list)
+    for row in cb_pending:
+        fid, x, y = row["fid"], row["x"], row["y"]
+        supply, geo_dist, props, status = (
+            row["supply"], row["geo_dist"], row["props"], row["status"],
+        )
+        graph_node = snap_cb_graph_node(s, x, y, supply, geo_dist, hub_nodes)
+        if not graph_node:
+            continue
+        if geo_dist <= _CB_MAX_GEO_SNAP:
+            hub_nodes[supply].append(graph_node)
+
+        tie_marker = is_tie_cb_marker(fid, props)
+        logical_tie = geo_dist > _CB_MAX_GEO_SNAP
+        virtual = tie_marker or logical_tie
+
         lon, lat = to_wgs(x, y)
+        loc = str(props.get("LOCATION", ""))
+        if logical_tie and not loc:
+            loc = f"Tie-feed · {supply}"
         s.substations.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [lon, lat]},
             "properties": {
-                "id": fid, "feeder": feeder, "location": str(props.get("LOCATION", "")),
+                "id": fid, "feeder": supply, "location": loc,
                 "state": "CLOSE" if status == 1 else "OPEN", "status": status,
                 "tag": str(props.get("TAG", "")), "opVolt": str(props.get("OP_VOLT", "")),
-                "virtual": False,
+                "virtual": virtual,
+                "tieFeed": logical_tie,
             },
         })
-        s.cb_node[fid]   = nearest
-        s.cb_feeder[fid] = feeder
+        s.cb_node[fid]   = graph_node
+        s.cb_feeder[fid] = supply
         s.cb_status[fid] = status  # overwritten by apply_startup_cb_closed()
-        s.feeder_cbs.setdefault(feeder, set()).add(fid)
+        s.feeder_cbs.setdefault(supply, set()).add(fid)
 
-    # R7: Virtual source CBs for feeders that have no real CB in pscb.json.
-    for feeder in list(s.feeder_edge_count):
-        _add_virtual_source_cb(s, feeder)
+    # Fallback: synthesise V-<feeder> only when cball has no seed for that feeder.
     virtual_added = ensure_all_feeders_have_source_cb(s)
 
     apply_startup_cb_closed(s)
+    s.snapshot_switch = dict(s.switch_status)
 
     # Reclosers
     for feat in all_recloser:
@@ -513,9 +804,14 @@ def build_state() -> NetworkState:
 
     print(f"  conductors : {len(s.conductor_keys):,}", flush=True)
     print(f"  nodes      : {len(s.nodes):,}", flush=True)
-    print(f"  switches   : {len(s.switches):,}", flush=True)
+    n_do = sum(1 for sw in s.switches if sw["properties"].get("deviceClass") == "dropout")
+    n_sw = len(s.switches) - n_do
+    n_open = sum(1 for v in s.switch_status.values() if v == 0)
+    print(f"  switches   : {n_sw:,} · dropouts (F): {n_do:,} · open: {n_open:,}", flush=True)
     print(f"  substations: {len(s.substations):,}", flush=True)
-    print(f"  CB-less feeders (NA): "
+    if cb_skipped_remote:
+        print(f"  CB skipped (off-map feeders): {cb_skipped_remote}", flush=True)
+    print(f"  CB-less feeders: "
           f"{sum(1 for f in s.feeder_edge_count if f not in s.feeder_cbs):,}", flush=True)
     print(f"  virtual CBs : "
           f"{sum(1 for cb in s.substations if cb['properties'].get('virtual')):,}",
@@ -635,8 +931,25 @@ def compute_energization(s: NetworkState) -> set[str]:
     )
 
 
+def compute_display_energization(s: NetworkState) -> set[str]:
+    """Conductor colouring.
+
+    Before any fault: show the full energised mesh (ignore open switches) so
+    the map matches the as-built network while switch icons still reflect
+    GIS ``PRESENTPOS``.  After a fault is placed, honour real switch/CB
+    topology so line status tracks the on-site situation."""
+    if s.fault_node:
+        return compute_energization(s)
+    return compute_energization_ex(
+        s.adjacency, s.node_feeder,
+        s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
+        {}, {}, None,
+    )
+
+
 def build_live_conductors(s: NetworkState):
-    energized = compute_energization(s)
+    energized = compute_display_energization(s)
+    affected  = compute_fault_affected_nodes(s) if s.fault_node else set()
     feeders_affected: set[str] = set()
     feeders_source_open = sorted(
         feeder for feeder, cb_set in s.feeder_cbs.items()
@@ -644,7 +957,11 @@ def build_live_conductors(s: NetworkState):
     )
     out = []
     for cw, keys in zip(s.conductor_wgs, s.conductor_keys):
-        on = all(k in energized for k in keys)
+        if s.fault_node and affected:
+            # สายที่โดนผลฟอลต์บางจุด → แสดงดับ (รวมสายแยกในโซนเดียวกัน)
+            on = all(k in energized for k in keys) and not any(k in affected for k in keys)
+        else:
+            on = all(k in energized for k in keys)
         if not on:
             feeders_affected.add(cw["properties"]["feeder"])
         out.append({**cw, "properties": {**cw["properties"], "status": "on" if on else "off"}})
@@ -864,21 +1181,30 @@ def generate_switching_plan(s: NetworkState) -> dict:
 # Fault-impact polygon — only after an active fault is placed
 # ─────────────────────────────────────────────────────────────────────────────
 def compute_fault_affected_nodes(s: NetworkState) -> set[str]:
-    """De-energized island that contains the reported fault (not all dark nodes)."""
+    """โซนดับทั้งหมดที่ต่อจากจุดฟอลต์ผ่านสายที่ไม่มีไฟ (รวมสายแยก) จนถึงสวิตช์เปิด."""
     if not s.fault_node:
         return set()
     energized = compute_energization(s)
-    de_nodes  = set(s.adjacency.keys()) - energized
-    removed: set[str] = set()
-    for fid, st in s.switch_status.items():
-        if st == 0 and fid in s.switch_node:
-            removed.add(s.switch_node[fid])
-    return bfs_island(
-        s.fault_node,
-        de_nodes | {s.fault_node},
-        s.adjacency,
-        removed,
-    )
+    open_sw   = open_switch_nodes(s)
+    affected: set[str] = set()
+    queue: deque[str] = deque()
+
+    def try_add(n: str) -> None:
+        if n in energized or n in open_sw or n in affected:
+            return
+        affected.add(n)
+        queue.append(n)
+
+    try_add(s.fault_node)
+    for nb in s.adjacency.get(s.fault_node, set()):
+        try_add(nb)
+
+    while queue:
+        cur = queue.popleft()
+        for nb in s.adjacency.get(cur, set()):
+            try_add(nb)
+
+    return affected
 
 
 def _utm_ring_to_wgs_polygon(ring_utm: list[tuple[float, float]]) -> list[list[float]]:
@@ -937,6 +1263,7 @@ def outage_polygon(s: NetworkState) -> dict | None:
             "faultFeeder":   s.fault_feeder,
             "faultCoords":   _format_fault_coords(s.fault_lat, s.fault_lon),
             "zone":          "fault-impact",
+            "includesLaterals": True,
         },
     }
 
@@ -948,6 +1275,19 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev-only-do-not-use-in-prod")
 USERNAME = os.environ.get("PEA_USERNAME", "PEAPJK")
 PASSWORD = os.environ.get("PEA_PASSWORD", "1234")
+
+
+@app.route("/api/network-config")
+def api_network_config():
+    """Expose CRS + layer filenames for operators / debugging."""
+    return jsonify({
+        "sourceCrs":       _SOURCE_CRS,
+        "nodeKeyDecimals": _NODE_DECIMALS,
+        "cbMaxGeoSnapM":   _CB_MAX_GEO_SNAP,
+        "cbSkipBeyondM":   _CB_SKIP_BEYOND,
+        "layers":          _NETWORK_CFG.get("layers"),
+        "dataDir":         DATA_DIR,
+    })
 
 
 @app.teardown_appcontext
@@ -996,11 +1336,30 @@ def transformers():
 @app.route("/feeders")
 def feeders():
     s = get_state()
+    energized = compute_display_energization(s)
+    live, _, _ = build_live_conductors(s)
+    seg_on: dict[str, int] = defaultdict(int)
+    seg_tot: dict[str, int] = defaultdict(int)
+    for seg in live:
+        fid = seg["properties"]["feeder"]
+        seg_tot[fid] += 1
+        if seg["properties"]["status"] == "on":
+            seg_on[fid] += 1
+    node_tot: dict[str, int] = defaultdict(int)
+    node_on: dict[str, int] = defaultdict(int)
+    for k, f in s.node_feeder.items():
+        node_tot[f] += 1
+        if k in energized:
+            node_on[f] += 1
     return jsonify({"feeders": [
         {
             "id": f, "color": c,
             "edgeCount": s.feeder_edge_count.get(f, 0),
             "hasCb": f in s.feeder_cbs,
+            "nodesOn": node_on.get(f, 0),
+            "nodesTotal": node_tot.get(f, 0),
+            "segmentsOn": seg_on.get(f, 0),
+            "segmentsTotal": seg_tot.get(f, 0),
         }
         for f, c in sorted(s.feeder_color.items())
     ]})
@@ -1032,10 +1391,11 @@ def substations():
 @app.route("/scada")
 def scada():
     s = get_state()
-    energized = compute_energization(s)
+    energized = compute_display_energization(s)
     _, feeders_affected, feeders_source_open = build_live_conductors(s)
     return jsonify({
         "faultActive":       bool(s.fault_node),
+        "lineDisplayFull":   not bool(s.fault_node),
         "faultFeeder":       s.fault_feeder,
         "faultLat":          s.fault_lat,
         "faultLon":          s.fault_lon,
@@ -1106,8 +1466,13 @@ def set_fault():
     cause = normalize_cause(str(data.get("cause", FAULT_CAUSES[0])))
     phase = normalize_phase(str(data.get("phase", "ALL")))
 
-    xu, yu  = to_utm(lon, lat)
-    nearest = find_nearest(s, xu, yu)
+    xu, yu = to_utm(lon, lat)
+    snap_feeder, snap_node = find_nearest_conductor_snap(s, xu, yu)
+    nearest = snap_node or find_nearest(s, xu, yu)
+    if snap_feeder and nearest:
+        on_feeder = find_nearest_in_feeder(s, xu, yu, snap_feeder, fallback=False)
+        if on_feeder:
+            nearest = on_feeder
     if not nearest:
         return jsonify({
             "active": False,
@@ -1120,7 +1485,7 @@ def set_fault():
     _take_snapshot(s)
 
     s.fault_node   = nearest
-    s.fault_feeder = s.node_feeder.get(nearest, "UNK")
+    s.fault_feeder = snap_feeder or s.node_feeder.get(nearest, "UNK")
     s.fault_lat    = lat
     s.fault_lon    = lon
     s.fault_cause  = cause
@@ -1128,8 +1493,8 @@ def set_fault():
     s.fault_started_at = time.time()
 
     # Record outage in SQLite (real event, no mock data)
-    energized = compute_energization(s)
-    nodes_off = len(s.adjacency) - len(energized)
+    affected  = compute_fault_affected_nodes(s)
+    nodes_off = len(affected) if affected else len(s.adjacency) - len(compute_energization(s))
     db = get_db()
     cur = db.execute(
         "INSERT INTO outage (feeder, cause, phase, lat, lon, started_at, nodes_affected) "
@@ -1210,12 +1575,21 @@ def _cause_chart_color(cause: str) -> str:
     return CAUSE_CHART_COLORS.get(normalize_cause(cause), "#64748b")
 
 
+_TH_TZ = timezone(timedelta(hours=7))
+
+
+def _format_outage_datetime_th(ts: float) -> str:
+    dt = datetime.fromtimestamp(ts, tz=_TH_TZ)
+    return f"{dt.day} {TH_MONTH_SHORT[dt.month - 1]} {dt.year + 543} {dt.hour:02d}:{dt.minute:02d}"
+
+
 @app.route("/api/outages/monthly")
 def api_outages_monthly():
     """Monthly outage counts + per-cause breakdown for dashboard charts."""
     db = get_db()
     rows = db.execute(
-        "SELECT cause, feeder, phase, started_at FROM outage ORDER BY started_at ASC"
+        "SELECT id, cause, feeder, phase, lat, lon, started_at "
+        "FROM outage ORDER BY started_at ASC"
     ).fetchall()
 
     by_month: dict[str, dict] = defaultdict(
@@ -1224,18 +1598,32 @@ def api_outages_monthly():
             "byCause": defaultdict(int),
             "byFeeder": defaultdict(int),
             "byPhase": defaultdict(int),
+            "events": [],
         }
     )
     for r in rows:
-        dt = datetime.fromtimestamp(float(r["started_at"]), tz=timezone.utc)
+        ts = float(r["started_at"])
+        dt = datetime.fromtimestamp(ts, tz=_TH_TZ)
         key = f"{dt.year:04d}-{dt.month:02d}"
         cause  = normalize_cause(r["cause"])
         feeder = str(r["feeder"] or "UNK")
         phase  = normalize_phase(r["phase"])
+        lat, lon = r["lat"], r["lon"]
         by_month[key]["count"] += 1
         by_month[key]["byCause"][cause] += 1
         by_month[key]["byFeeder"][feeder] += 1
         by_month[key]["byPhase"][phase] += 1
+        by_month[key]["events"].append({
+            "id":        r["id"],
+            "feeder":    feeder,
+            "cause":     cause,
+            "phase":     phase,
+            "lat":       lat,
+            "lon":       lon,
+            "coords":    _format_fault_coords(lat, lon) if lat is not None and lon is not None else "—",
+            "dateTh":    _format_outage_datetime_th(ts),
+            "startedAt": ts,
+        })
 
     all_feeders: set[str] = set()
     months: list[dict] = []
@@ -1244,6 +1632,7 @@ def api_outages_monthly():
         by_cause  = dict(by_month[key]["byCause"])
         by_feeder = dict(by_month[key]["byFeeder"])
         by_phase  = dict(by_month[key]["byPhase"])
+        events    = sorted(by_month[key]["events"], key=lambda e: -e["startedAt"])
         all_feeders.update(by_feeder.keys())
         months.append({
             "key":      key,
@@ -1255,6 +1644,7 @@ def api_outages_monthly():
             "byCause":  by_cause,
             "byFeeder": by_feeder,
             "byPhase":  by_phase,
+            "events":   events,
         })
 
     feeders_sorted = sorted(all_feeders)

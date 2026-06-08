@@ -112,6 +112,12 @@ button:disabled{opacity:.35;cursor:default}
 .m-sw{width:11px;height:11px;border-radius:50%;border:1.5px solid rgba(0,0,0,.5)}
 .m-sw.cl{background:#3fb950;box-shadow:0 0 5px rgba(63,185,80,.7)}
 .m-sw.op{background:#f85149;box-shadow:0 0 5px rgba(248,81,73,.7)}
+.m-do{width:9px;height:9px;border-radius:1px;border:1.5px solid rgba(0,0,0,.55);transform:rotate(45deg)}
+.m-do.cl{background:#fbbf24;box-shadow:0 0 4px rgba(251,191,36,.75)}
+.m-do.op{background:#64748b;box-shadow:0 0 3px rgba(100,116,139,.6)}
+.sw-filter{display:flex;gap:4px;padding:0 10px 6px}
+.sw-filter button{flex:1;padding:4px 6px;font-size:10px;border:1px solid #30363d;background:#0d1117;color:#768390;border-radius:4px;cursor:pointer}
+.sw-filter button.on{color:#00e5ff;border-color:rgba(0,229,255,.45);background:rgba(0,229,255,.06)}
 .m-rc{width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #ffd600;filter:drop-shadow(0 0 3px rgba(255,214,0,.7))}
 .m-fault{width:18px;height:18px;border-radius:50%;background:radial-gradient(circle,#f85149,#991b1b);border:2px solid #fff;box-shadow:0 0 10px rgba(248,81,73,.9);animation:blink 1s infinite}
 
@@ -240,7 +246,9 @@ button:disabled{opacity:.35;cursor:default}
         <div class="leg-row on" id="leg-vsub" onclick="toggleLayer('substations')" title="Virtual CB representing a tie-feed from a neighbouring substation">
           <div class="leg-sym"><div class="s-diamond" style="background:transparent;border:1.5px dashed #06b6d4"></div></div><span>Virtual CB (Tie-feed)</span></div>
         <div class="leg-row on" id="leg-swi" onclick="toggleLayer('switches')">
-          <div class="leg-sym"><div class="s-circle" style="background:#3fb950"></div></div><span>Switches</span></div>
+          <div class="leg-sym"><div class="s-circle" style="background:#3fb950"></div></div><span>Switches (S)</span></div>
+        <div class="leg-row" id="leg-do" onclick="toggleLayer('dropouts')">
+          <div class="leg-sym"><div class="s-diamond" style="background:#fbbf24;width:8px;height:8px"></div></div><span>Dropouts (F)</span></div>
         <div class="leg-row on" id="leg-rec" onclick="toggleLayer('reclosers')">
           <div class="leg-sym"><div class="s-tri" style="border-bottom-color:#ffd600"></div></div><span>Reclosers</span></div>
         <div class="leg-row" id="leg-xfm" onclick="toggleLayer('transformers')">
@@ -258,6 +266,11 @@ button:disabled{opacity:.35;cursor:default}
       </div>
       <div class="tab-pane active" id="tab-switches">
         <input id="sw-search" placeholder="ค้นหา id, feeder, location…" oninput="renderSwitches()" />
+        <div class="sw-filter">
+          <button type="button" id="swf-all" class="on" onclick="setSwClassFilter(null,this)">ทั้งหมด</button>
+          <button type="button" id="swf-sw" onclick="setSwClassFilter('switch',this)">Switch</button>
+          <button type="button" id="swf-do" onclick="setSwClassFilter('dropout',this)">Dropout (F)</button>
+        </div>
         <div id="sw-list"></div>
       </div>
       <div class="tab-pane" id="tab-feeders"><div id="fd-list"></div></div>
@@ -293,8 +306,8 @@ const D = {
   conductors:[], switches:[], reclosers:[], transformers:[], substations:[],
   feeders:[], scada:null, outagePoly:null,
   fault:{active:false,feeder:null,lat:null,lon:null},
-  feederFilter:null, selectedSwitch:null, armMode:false,
-  layers:{switches:true,reclosers:true,transformers:false,substations:true,outage:true},
+  feederFilter:null, swClassFilter:null, selectedSwitch:null, armMode:false,
+  layers:{switches:true,dropouts:false,reclosers:true,transformers:false,substations:true,outage:true},
   plan:null, planDone:0,
   mapBusy:false,           // R3: true while zooming/panning
   pendingRefresh:false,    // R3: coalesce refreshes during interaction
@@ -314,6 +327,7 @@ map.on("zoomend moveend",()=>{
 const lyr = {
   conductors:  L.layerGroup().addTo(map),
   switches:    L.layerGroup().addTo(map),
+  dropouts:    L.layerGroup(),
   reclosers:   L.layerGroup().addTo(map),
   transformers:L.layerGroup(),
   substations: L.layerGroup().addTo(map),
@@ -383,28 +397,41 @@ function drawConductors(){
   }
 }
 
-function drawSwitches(){
-  lyr.switches.clearLayers();
-  if(!D.layers.switches) return;
+function drawSwitchMarkers(layerKey, deviceClass){
+  lyr[layerKey].clearLayers();
+  if(!D.layers[layerKey]) return;
   for(const f of D.switches){
-    if(D.feederFilter && f.properties.feeder!==D.feederFilter) continue;
+    const p=f.properties;
+    if(p.deviceClass!==deviceClass) continue;
+    if(D.feederFilter && p.feeder!==D.feederFilter) continue;
     const [lo,la]=f.geometry.coordinates;
-    const cl=f.properties.status===1;
-    const sel=D.selectedSwitch===f.properties.id;
+    const cl=p.status===1;
+    const sel=D.selectedSwitch===p.id;
     const out=sel?"outline:3px solid #00e5ff;outline-offset:2px;":"";
-    const icon=di(`<div class="m-sw ${cl?"cl":"op"}" style="${out}"></div>`,[11,11]);
+    const isDo=deviceClass==="dropout";
+    const icon=di(isDo
+      ?`<div class="m-do ${cl?"cl":"op"}" style="${out}"></div>`
+      :`<div class="m-sw ${cl?"cl":"op"}" style="${out}"></div>`,
+      isDo?[10,10]:[11,11]);
     L.marker([la,lo],{icon})
       .bindPopup(swPopup(f))
-      .on("click",()=>{D.selectedSwitch=f.properties.id;renderSwitches();})
-      .addTo(lyr.switches);
+      .on("click",()=>{D.selectedSwitch=p.id;renderSwitches();})
+      .addTo(lyr[layerKey]);
   }
+}
+function drawSwitches(){
+  drawSwitchMarkers("switches","switch");
+  drawSwitchMarkers("dropouts","dropout");
 }
 function swPopup(f){
   const p=f.properties,cl=p.status===1;
+  const typeLbl=p.deviceClass==="dropout"?"Dropout (F)":"Switch";
   return `<div style="font-family:monospace;font-size:11px;min-width:175px">
     <b>${p.id}</b><br>
-    State:<span style="color:${cl?"#3fb950":"#f85149"}">${p.state}</span>
+    Type:<span style="color:${p.deviceClass==="dropout"?"#fbbf24":"#00e5ff"}">${typeLbl}</span>
+     · State:<span style="color:${cl?"#3fb950":"#f85149"}">${p.state}</span>
      · Feeder:${p.feeder} · ${p.kind}<br>
+    ${p.presentPos!=null?`PRESENTPOS:<span style="color:#768390">${p.presentPos}</span><br>`:""}
     ${p.location?`<span style="color:#768390">${p.location}</span><br>`:""}
     <button onclick="doToggleSw('${p.id}')" style="margin-top:5px;width:100%;padding:4px;
       border:1px solid #00e5ff;background:transparent;color:#00e5ff;border-radius:4px;cursor:pointer">
@@ -565,12 +592,12 @@ function updateHeader(){
   document.getElementById("btn-plan").disabled=!sc.faultActive;
 }
 
-const LEG_IDS={switches:"swi",reclosers:"rec",transformers:"xfm",substations:"sub",outage:"out"};
+const LEG_IDS={switches:"swi",dropouts:"do",reclosers:"rec",transformers:"xfm",substations:"sub",outage:"out"};
 function toggleLayer(name){
   D.layers[name]=!D.layers[name];
   document.getElementById("leg-"+LEG_IDS[name]).classList.toggle("on",D.layers[name]);
   if(D.layers[name]) lyr[name].addTo(map); else map.removeLayer(lyr[name]);
-  ({switches:drawSwitches,reclosers:drawReclosers,transformers:drawTransformers,
+  ({switches:drawSwitches,dropouts:drawSwitches,reclosers:drawReclosers,transformers:drawTransformers,
     substations:drawSubstations,outage:drawOutage}[name])?.();
 }
 
@@ -585,13 +612,21 @@ function setFeeder(f){
   D.feederFilter=f; drawConductors(); drawSwitches(); renderFeeders(); renderSwitches();
 }
 
+function setSwClassFilter(cls,btn){
+  D.swClassFilter=cls;
+  document.querySelectorAll(".sw-filter button").forEach(b=>b.classList.remove("on"));
+  if(btn) btn.classList.add("on");
+  renderSwitches();
+}
+
 function renderSwitches(){
-  const q=(document.getElementById("sw-search").value||"").toLowerCase(), ff=D.feederFilter;
+  const q=(document.getElementById("sw-search").value||"").toLowerCase(), ff=D.feederFilter, cf=D.swClassFilter;
   const list=D.switches.filter(f=>{
     const p=f.properties;
     if(ff&&p.feeder!==ff) return false;
+    if(cf&&p.deviceClass!==cf) return false;
     if(!q) return true;
-    return [p.id,p.feeder,p.location,p.kind].some(v=>String(v||"").toLowerCase().includes(q));
+    return [p.id,p.feeder,p.location,p.kind,p.deviceClass].some(v=>String(v||"").toLowerCase().includes(q));
   });
   const el=document.getElementById("sw-list");
   if(!list.length){el.innerHTML='<div style="text-align:center;color:#768390;padding:20px;font-size:11px">ไม่พบ switch</div>';return;}
@@ -601,7 +636,7 @@ function renderSwitches(){
       <span class="sw-dot" style="background:${cl?"#3fb950":"#f85149"};box-shadow:0 0 4px ${cl?"rgba(63,185,80,.6)":"rgba(248,81,73,.6)"}"></span>
       <div class="sw-info">
         <div class="sw-id">${p.id}</div>
-        <div class="sw-sub">${p.feeder} · ${p.kind}${p.location?" · "+p.location:""}</div>
+        <div class="sw-sub">${p.deviceClass==="dropout"?"F":"S"} · ${p.feeder} · ${p.kind}${p.location?" · "+p.location:""}</div>
       </div>
       <button class="sw-tog" onclick="event.stopPropagation();doToggleSw('${p.id}')">${cl?"Open":"Close"}</button>
     </div>`;
@@ -624,10 +659,14 @@ function renderFeeders(){
     <span class="fd-dot" style="background:#444"></span>All feeders</div>`];
   for(const f of [...D.feeders].sort((a,b)=>b.edgeCount-a.edgeCount)){
     const cbs=cbMap[f.id]||[], srcOpen=cbs.length&&cbs.every(s=>s===0);
+    const segTot=f.segmentsTotal||0, segOn=f.segmentsOn||0;
+    const pct=segTot>0?Math.round(segOn/segTot*100):100;
+    const dim=pct<95?'<span class="fd-cb">'+pct+'%</span>':"";
     rows.push(`<div class="fd-row${D.feederFilter===f.id?" sel":""}" onclick="setFeeder('${f.id}')">
       <span class="fd-dot" style="background:${f.color}"></span>
       <span>${f.id}</span>
       ${srcOpen?'<span class="fd-cb">⚡ CB open</span>':""}
+      ${dim}
       ${!f.hasCb?'<span class="fd-no-cb">· no CB</span>':""}
       <span class="fd-cnt">${f.edgeCount.toLocaleString()}</span>
     </div>`);
@@ -642,6 +681,9 @@ function renderStatus(){
   document.getElementById("st-list").innerHTML=[
     `<div class="st-card">
       <div class="st-title">⚡ Network Energization</div>
+      ${sc.lineDisplayFull
+        ?`<div style="font-size:10px;color:#768390;margin-bottom:6px">แสดงสายเต็มระบบ · สวิตช์ตาม PRESENTPOS · หลังวางฟอลต์จะสะท้อนสถานะจริง</div>`
+        :`<div style="font-size:10px;color:#d29922;margin-bottom:6px">สะท้อนสวิตช์/CB จริงหลังเกิดเหตุฟอลต์</div>`}
       <div class="st-nums">
         <div class="st-num"><div class="st-val good">${sc.nodesOn.toLocaleString()}</div><div class="st-lbl">Nodes on</div></div>
         <div class="st-num"><div class="st-val bad">${sc.nodesOff.toLocaleString()}</div><div class="st-lbl">Nodes off</div></div>
