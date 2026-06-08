@@ -187,7 +187,7 @@ button:disabled{opacity:.35;cursor:default}
       <div class="stat"><span class="stat-icon">⚡</span>
         <div><div class="stat-label">Energized</div><div class="stat-value" id="h-pct">—%</div></div></div>
       <div class="stat"><span class="stat-icon">⏻</span>
-        <div><div class="stat-label">Open Switches</div><div class="stat-value" id="h-sw">—/—</div></div></div>
+        <div><div class="stat-label">Open Tie Switches</div><div class="stat-value" id="h-sw">—/—</div></div></div>
       <div class="stat"><span class="stat-icon">🔌</span>
         <div><div class="stat-label">Source CBs Open</div><div class="stat-value" id="h-cb">—/—</div></div></div>
       <div class="stat"><span class="stat-icon">⚠</span>
@@ -697,7 +697,7 @@ function renderStatus(){
       </div>
       ${cbsOpen.length?`<div class="chips">${cbsOpen.map(s=>`<span class="chip chip-w">${s.properties.feeder}</span>`).join("")}</div>`:""}</div>`,
     `<div class="st-card">
-      <div class="st-title">⏻ Switching</div>
+      <div class="st-title">⏻ Tie Switches</div>
       <div class="st-nums">
         <div class="st-num"><div class="st-val">${sc.switchOpen}</div><div class="st-lbl">Open</div></div>
         <div class="st-num"><div class="st-val mute">${sc.switchTotal-sc.switchOpen}</div><div class="st-lbl">Closed</div></div>
