@@ -67,6 +67,23 @@ Architectural fixes applied (over original appdemo.py):
 
   R14 Canonical Thai fault causes (incl. งู) in ``FAULT_CAUSES`` — shared by
       indexpro, dashboard charts, and SQLite via ``/api/fault-causes``.
+
+  R15 Outage zone: per-feeder hull from off conductor geometry (all segments
+      of a feeder treated as one mesh); only open *tie* switches cut flow;
+      pre-fault display still shows every line energised (R12).
+
+  R16 Ring-circuit model after fault: display and switching-plan treat open
+      tie switches as non-isolating (both ends fed by neighbour sources).
+      Only the local fault section darkens; plan cuts apply to switches
+      opened in the plan, not pre-existing open ties.
+
+  R17 Dependent laterals: branch lines with no connection outside the fault
+      zone (fed only via main-line taps / reclosers / dropouts inside the
+      zone) are included in the outage polygon and conductor-off display.
+
+  R18 Protection-device taps: reclosers and dropouts snap lateral endpoints
+      within 50 m into the graph (GIS node-key gaps).  Outage expansion stops
+      at *open* tie switches; closed ties block only cross-feeder jumps.
 """
 from __future__ import annotations
 import json
@@ -161,6 +178,8 @@ FEEDER_PALETTE = [
 ]
 
 # Fixed colours so feeders never share a hue on the map (e.g. PDA10 ≠ KUA01).
+_LATERAL_SNAP_M = 50.0  # GIS tap gap at recloser / dropout lateral branches
+
 FEEDER_COLOR_MAP: dict[str, str] = {
     "KUA01": "#22d3ee",
     "KUA02": "#7c4dff",
@@ -271,6 +290,7 @@ class NetworkState:
         self.switches:     list[dict]        = []
         self.switch_node:  dict[str, str]    = {}
         self.switch_status:dict[str, int]    = {}   # 1=closed 0=open
+        self.tie_switch_ids: set[str]        = set()  # non-dropout switches
 
         self.substations:  list[dict]        = []
         self.cb_node:      dict[str, str]    = {}
@@ -279,6 +299,7 @@ class NetworkState:
         self.feeder_cbs:   dict[str, set[str]] = {}
 
         self.reclosers:    list[dict]        = []
+        self.recloser_node: dict[str, str]   = {}   # FACILITYID → graph node
         self.transformers: list[dict]        = []
 
         self.feeder_color:      dict[str, str] = {}
@@ -334,6 +355,82 @@ def open_switch_nodes(s: NetworkState) -> set[str]:
         for fid, st in s.switch_status.items()
         if st == 0 and fid in s.switch_node
     }
+
+
+def open_tie_switch_nodes(s: NetworkState) -> set[str]:
+    """Nodes of open tie switches — sectionalising cuts (dropouts excluded)."""
+    return {
+        s.switch_node[fid]
+        for fid in s.tie_switch_ids
+        if s.switch_status.get(fid, 1) == 0 and fid in s.switch_node
+    }
+
+
+def _link_protection_device_taps(s: NetworkState) -> int:
+    """Wire GIS-near lateral endpoints onto recloser/dropout graph nodes (R18)."""
+    anchors: list[tuple[str, str, float, float]] = []
+    seen_anchor: set[tuple[str, str]] = set()
+
+    def add_anchor(feeder: str, node: str, x: float, y: float) -> None:
+        key = (feeder, node)
+        if key in seen_anchor:
+            return
+        seen_anchor.add(key)
+        anchors.append((feeder, node, x, y))
+
+    for rc in s.reclosers:
+        props = rc["properties"]
+        fid = props["id"]
+        feeder = props["feeder"]
+        lon, lat = rc["geometry"]["coordinates"]
+        x, y = to_utm(lon, lat)
+        node = find_nearest_in_feeder(s, x, y, feeder, fallback=True)
+        if not node:
+            continue
+        s.recloser_node[fid] = node
+        ax, ay = s.node_xy.get(node, (x, y))
+        add_anchor(feeder, node, ax, ay)
+
+    for sw in s.switches:
+        props = sw["properties"]
+        if props.get("deviceClass") != "dropout":
+            continue
+        fid = props["id"]
+        node = s.switch_node.get(fid)
+        if not node or node not in s.node_xy:
+            continue
+        feeder = props.get("feeder") or s.node_feeder.get(node, "UNK")
+        ax, ay = s.node_xy[node]
+        add_anchor(feeder, node, ax, ay)
+
+    lateral_endpoints: set[str] = set()
+    for keys in s.conductor_keys:
+        if len(keys) > 3:
+            continue
+        for k in keys:
+            if len(s.adjacency.get(k, set())) <= 2:
+                lateral_endpoints.add(k)
+
+    snap2 = _LATERAL_SNAP_M * _LATERAL_SNAP_M
+    links = 0
+    linked: set[tuple[str, str]] = set()
+    for feeder, anchor, ax, ay in anchors:
+        for k in s._feeder_keys.get(feeder, []):
+            if k == anchor or k not in s.node_xy:
+                continue
+            if k not in lateral_endpoints:
+                continue
+            x, y = s.node_xy[k]
+            if (x - ax) ** 2 + (y - ay) ** 2 > snap2:
+                continue
+            pair = (anchor, k) if anchor < k else (k, anchor)
+            if pair in linked:
+                continue
+            linked.add(pair)
+            s.adjacency.setdefault(anchor, set()).add(k)
+            s.adjacency.setdefault(k, set()).add(anchor)
+            links += 1
+    return links
 
 
 def _dist2_point_segment(
@@ -715,6 +812,8 @@ def build_state() -> NetworkState:
         })
         s.switch_node[fid]   = nearest
         s.switch_status[fid] = status
+        if device != "dropout":
+            s.tie_switch_ids.add(fid)
 
     # Substations (source CBs) — cball.json may place tie-feeds off the line mesh.
     conductor_feeders = set(s.feeder_edge_count.keys())
@@ -795,14 +894,19 @@ def build_state() -> NetworkState:
         props = feat.get("properties") or {}
         x, y  = float(geom["coordinates"][0]), float(geom["coordinates"][1])
         lon, lat = to_wgs(x, y)
+        rc_id = str(props.get("FACILITYID", props.get("TAG", "RC")))
         s.reclosers.append({
             "type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]},
             "properties": {
-                "id": str(props.get("FACILITYID", props.get("TAG", "RC"))),
+                "id": rc_id,
                 "feeder": str(props.get("FEEDERID", "UNK")),
                 "location": str(props.get("LOCATION", "")),
             },
         })
+
+    tap_links = _link_protection_device_taps(s)
+    if tap_links:
+        print(f"  lateral taps : {tap_links:,} virtual links (recloser/dropout)", flush=True)
 
     # Transformers
     for feat in all_trans:
@@ -901,14 +1005,19 @@ def compute_energization_ex(
     switch_node:   dict[str, str],
     switch_status: dict[str, int],
     fault_node:    str | None,
+    cut_switch_ids: set[str] | frozenset[str] | None = None,
 ) -> set[str]:
-    """Core BFS energization. R1: a feeder without any CB is *not* source-off."""
+    """Core BFS energization. R1: a feeder without any CB is *not* source-off.
+
+    ``cut_switch_ids``: open switches that block flow (tie switches only in
+    production).  Pass ``frozenset()`` to ignore all switch cuts."""
     removed: set[str] = set()
     if fault_node:
         removed.add(fault_node)
     for fid, st in switch_status.items():
         if st == 0 and fid in switch_node:
-            removed.add(switch_node[fid])
+            if cut_switch_ids is None or fid in cut_switch_ids:
+                removed.add(switch_node[fid])
 
     # R1 fix: empty cb_set must NOT count as "all open"
     feeder_source_off: set[str] = set()
@@ -945,26 +1054,58 @@ def compute_energization_ex(
 
 
 def compute_energization(s: NetworkState) -> set[str]:
+    """Physical topology — open tie switches sectionalise the mesh."""
     return compute_energization_ex(
         s.adjacency, s.node_feeder,
         s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
         s.switch_node, s.switch_status, s.fault_node,
+        s.tie_switch_ids,
+    )
+
+
+def compute_logical_energization(s: NetworkState) -> set[str]:
+    """Ring/mesh model — every closed source CB feeds; open ties do not cut.
+
+    Both ends of a line are assumed supplied from neighbouring sources so
+    unrelated sections stay energised for display and switching-plan work."""
+    return compute_energization_ex(
+        s.adjacency, s.node_feeder,
+        s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
+        {}, {}, s.fault_node, frozenset(),
+    )
+
+
+def _plan_energization(s: NetworkState, plan_open: set[str]) -> set[str]:
+    """Logical mesh + fault + only switches explicitly opened in the plan."""
+    sw_nodes = {
+        fid: s.switch_node[fid]
+        for fid in plan_open
+        if fid in s.tie_switch_ids and fid in s.switch_node
+    }
+    sw_status = {fid: 0 for fid in sw_nodes}
+    return compute_energization_ex(
+        s.adjacency, s.node_feeder,
+        s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
+        sw_nodes, sw_status, s.fault_node,
+        frozenset(plan_open),
     )
 
 
 def compute_display_energization(s: NetworkState) -> set[str]:
-    """Conductor colouring.
+    """Conductor colouring — full ring circuit; only fault node blocks flow.
 
-    Before any fault: show the full energised mesh (ignore open switches) so
-    the map matches the as-built network while switch icons still reflect
-    GIS ``PRESENTPOS``.  After a fault is placed, honour real switch/CB
-    topology so line status tracks the on-site situation."""
-    if s.fault_node:
-        return compute_energization(s)
-    return compute_energization_ex(
-        s.adjacency, s.node_feeder,
-        s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
-        {}, {}, None,
+    Open tie-switch icons still reflect GIS ``PRESENTPOS`` but lines stay
+    energised on both sides (R16).  Segments in the fault-impact zone are
+    marked off via ``compute_fault_affected_nodes`` in ``build_live_conductors``."""
+    return compute_logical_energization(s)
+
+
+def _conductor_segment_off(
+    keys: list[str], energized: set[str], affected: set[str],
+) -> bool:
+    """True when a conductor segment should render as de-energised."""
+    return not (
+        all(k in energized for k in keys) and not any(k in affected for k in keys)
     )
 
 
@@ -978,11 +1119,9 @@ def build_live_conductors(s: NetworkState):
     )
     out = []
     for cw, keys in zip(s.conductor_wgs, s.conductor_keys):
-        if s.fault_node and affected:
-            # สายที่โดนผลฟอลต์บางจุด → แสดงดับ (รวมสายแยกในโซนเดียวกัน)
-            on = all(k in energized for k in keys) and not any(k in affected for k in keys)
-        else:
-            on = all(k in energized for k in keys)
+        on = not _conductor_segment_off(keys, energized, affected) if s.fault_node else (
+            all(k in energized for k in keys)
+        )
         if not on:
             feeders_affected.add(cw["properties"]["feeder"])
         out.append({**cw, "properties": {**cw["properties"], "status": "on" if on else "off"}})
@@ -1024,17 +1163,9 @@ def generate_switching_plan(s: NetworkState) -> dict:
         return {"error": "ไม่มี fault ที่ active กรุณาวางจุดฟอลต์หรือระบุพิกัดก่อน"}
 
     all_nodes  = set(s.adjacency.keys())
-    energized0 = compute_energization(s)
-    de_nodes0  = all_nodes - energized0
-
-    if not de_nodes0:
-        return {
-            "steps": [], "faultFeeder": s.fault_feeder,
-            "deenergizedNodes": 0, "totalRestorable": 0, "nodesIrrecoverable": 0,
-            "summary": "ทุก node มีไฟอยู่แล้ว ไม่ต้องทำ switching",
-        }
-
     fault_zone = compute_fault_affected_nodes(s)
+    energized0 = compute_logical_energization(s)
+    de_nodes0  = all_nodes - energized0
 
     isolation_candidates: list[str] = []
     for fid, status in s.switch_status.items():
@@ -1070,22 +1201,16 @@ def generate_switching_plan(s: NetworkState) -> dict:
             "nodesRestored": 0,
         })
 
-    sim_sw = dict(s.switch_status)
-    for fid in iso_switches:
-        sim_sw[fid] = 0
+    plan_open: set[str] = set(iso_switches)
 
-    energized_iso = compute_energization_ex(
-        s.adjacency, s.node_feeder,
-        s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
-        s.switch_node, sim_sw, s.fault_node,
-    )
+    energized_iso = _plan_energization(s, plan_open)
     de_iso = all_nodes - energized_iso
 
     removed_iso: set[str] = set()
     if s.fault_node:
         removed_iso.add(s.fault_node)
-    for fid, st in sim_sw.items():
-        if st == 0 and fid in s.switch_node:
+    for fid in plan_open:
+        if fid in s.switch_node:
             removed_iso.add(s.switch_node[fid])
 
     visited: set[str] = set(fault_zone) | removed_iso
@@ -1100,9 +1225,7 @@ def generate_switching_plan(s: NetworkState) -> dict:
         visited.update(island)
 
         best_sw = None
-        for fid, st in sim_sw.items():
-            if st != 0:
-                continue
+        for fid in plan_open:
             node = s.switch_node.get(fid)
             if not node:
                 continue
@@ -1115,7 +1238,7 @@ def generate_switching_plan(s: NetworkState) -> dict:
         restorable.append({"island": island, "switch": best_sw, "size": len(island)})
 
     used_switches: set[str] = set()
-    cumulative_sw = dict(sim_sw)
+    cumulative_open = set(plan_open)
     cumulative_energized = set(energized_iso)
     res_step_no = len(iso_switches)
 
@@ -1124,14 +1247,10 @@ def generate_switching_plan(s: NetworkState) -> dict:
         if sw_fid is None or sw_fid in used_switches:
             continue
         used_switches.add(sw_fid)
-        cumulative_sw[sw_fid] = 1
+        cumulative_open.discard(sw_fid)
         res_step_no += 1
 
-        new_energized = compute_energization_ex(
-            s.adjacency, s.node_feeder,
-            s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
-            s.switch_node, cumulative_sw, s.fault_node,
-        )
+        new_energized = _plan_energization(s, cumulative_open)
         actually_restored = len(new_energized) - len(cumulative_energized)
         cumulative_energized = new_energized
 
@@ -1201,31 +1320,154 @@ def generate_switching_plan(s: NetworkState) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # Fault-impact polygon — only after an active fault is placed
 # ─────────────────────────────────────────────────────────────────────────────
-def compute_fault_affected_nodes(s: NetworkState) -> set[str]:
-    """โซนดับทั้งหมดที่ต่อจากจุดฟอลต์ผ่านสายที่ไม่มีไฟ (รวมสายแยก) จนถึงสวิตช์เปิด."""
-    if not s.fault_node:
-        return set()
-    energized = compute_energization(s)
-    open_sw   = open_switch_nodes(s)
-    affected: set[str] = set()
-    queue: deque[str] = deque()
+def _tie_boundary_nodes(s: NetworkState) -> set[str]:
+    return {
+        s.switch_node[fid]
+        for fid in s.tie_switch_ids
+        if fid in s.switch_node
+    }
 
-    def try_add(n: str) -> None:
-        if n in energized or n in open_sw or n in affected:
-            return
-        affected.add(n)
-        queue.append(n)
 
-    try_add(s.fault_node)
-    for nb in s.adjacency.get(s.fault_node, set()):
-        try_add(nb)
+def _outage_zone_barrier(s: NetworkState, cur: str, nb: str) -> bool:
+    """True when ``nb`` must not be entered from ``cur`` during outage BFS (R18)."""
+    if nb in open_tie_switch_nodes(s):
+        return True
+    if nb in _tie_boundary_nodes(s):
+        cur_f = s.node_feeder.get(cur, "")
+        nb_f = s.node_feeder.get(nb, "")
+        if cur_f != nb_f:
+            return True
+    return False
 
+
+def _reachable_outside_zone(
+    s: NetworkState,
+    start: str,
+    zone_wall: set[str],
+    tie_nodes: set[str],
+    outside: set[str],
+) -> bool:
+    """True when ``start`` can reach supply outside ``zone_wall`` without
+    crossing the wall or open tie sectionalisers."""
+    if start in zone_wall or start in tie_nodes:
+        return False
+    if start in outside:
+        return True
+    seen: set[str] = {start}
+    queue: deque[str] = deque([start])
+    while queue:
+        cur = queue.popleft()
+        if cur in outside:
+            return True
+        for nb in s.adjacency.get(cur, set()):
+            if nb in seen or nb in zone_wall or nb in tie_nodes:
+                continue
+            seen.add(nb)
+            queue.append(nb)
+    return False
+
+
+def _segment_touches_zone(
+    s: NetworkState,
+    keys: list[str],
+    zone: set[str],
+    zone_xy: list[tuple[float, float]] | None = None,
+    snap_m: float = _LATERAL_SNAP_M,
+) -> bool:
+    """Graph edge or GIS-near tap (recloser/dropout) to the outage zone."""
+    if any(k in zone for k in keys):
+        return True
+    if any(
+        nb in zone
+        for k in keys
+        for nb in s.adjacency.get(k, set())
+    ):
+        return True
+    if zone_xy is None:
+        zone_xy = [s.node_xy[k] for k in zone if k in s.node_xy]
+    if not zone_xy:
+        return False
+    snap2 = snap_m * snap_m
+    for k in keys:
+        if k not in s.node_xy:
+            continue
+        x, y = s.node_xy[k]
+        for ax, ay in zone_xy:
+            if (x - ax) ** 2 + (y - ay) ** 2 <= snap2:
+                return True
+    return False
+
+
+def _nodes_with_outside_supply(
+    s: NetworkState,
+    core: set[str],
+    open_tie: set[str],
+    outside: set[str],
+) -> set[str]:
+    """All nodes that can reach ``outside`` without crossing ``core`` or open ties."""
+    supplied = set(outside)
+    queue: deque[str] = deque(outside)
     while queue:
         cur = queue.popleft()
         for nb in s.adjacency.get(cur, set()):
-            try_add(nb)
+            if nb in supplied or nb in core or nb in open_tie:
+                continue
+            supplied.add(nb)
+            queue.append(nb)
+    return supplied
 
-    return affected
+
+def _expand_dependent_branch_nodes(s: NetworkState, core: set[str]) -> set[str]:
+    """Include laterals fed only from inside the main-line outage core (R17–R18).
+
+    Virtual recloser/dropout taps are already in ``adjacency``; this walk pulls
+    in branch meshes that cannot reach supply except by crossing ``core``."""
+    if not core:
+        return set()
+    open_tie = open_tie_switch_nodes(s)
+    outside = compute_logical_energization(s) - core
+    supplied = _nodes_with_outside_supply(s, core, open_tie, outside)
+    expanded = set(core)
+    frontier: set[str] = set()
+    for n in core:
+        for nb in s.adjacency.get(n, set()):
+            if nb not in expanded and not _outage_zone_barrier(s, n, nb):
+                frontier.add(nb)
+    while frontier:
+        adds = {nb for nb in frontier if nb not in expanded and nb not in supplied}
+        if not adds:
+            break
+        expanded |= adds
+        next_frontier: set[str] = set()
+        for n in adds:
+            for nb in s.adjacency.get(n, set()):
+                if nb not in expanded and not _outage_zone_barrier(s, n, nb):
+                    next_frontier.add(nb)
+        frontier = next_frontier
+    return expanded
+
+
+def _core_fault_section_nodes(s: NetworkState) -> set[str]:
+    """Main-line section from fault until every tie-switch node (R16–R18)."""
+    if not s.fault_node:
+        return set()
+    tie_nodes = _tie_boundary_nodes(s)
+    core: set[str] = {s.fault_node}
+    queue: deque[str] = deque([s.fault_node])
+    while queue:
+        cur = queue.popleft()
+        for nb in s.adjacency.get(cur, set()):
+            if nb in core or nb in tie_nodes:
+                continue
+            core.add(nb)
+            queue.append(nb)
+    return core
+
+
+def compute_fault_affected_nodes(s: NetworkState) -> set[str]:
+    """Fault zone on main line plus dependent branch/lateral meshes (R16–R17)."""
+    core = _core_fault_section_nodes(s)
+    return _expand_dependent_branch_nodes(s, core)
 
 
 def _utm_ring_to_wgs_polygon(ring_utm: list[tuple[float, float]]) -> list[list[float]]:
@@ -1262,31 +1504,85 @@ def _polygon_ring_from_utm_points(pts_utm: np.ndarray, min_radius_m: float = 60.
     return _utm_ring_to_wgs_polygon(ring_utm)
 
 
-def outage_polygon(s: NetworkState) -> dict | None:
-    """Convex hull around nodes impacted by the active fault only."""
+def outage_polygons(s: NetworkState) -> list[dict]:
+    """Per-feeder outage hulls traced along off conductor geometry (R15–R17).
+
+    Uses the same off-segment rule as ``build_live_conductors`` so dependent
+    branch/lateral lines (recloser/dropout taps) are enclosed even when GIS
+    node keys do not meet the main-line mesh."""
     if not s.fault_node:
-        return None
+        return []
     affected = compute_fault_affected_nodes(s)
     if not affected:
-        return None
-    keys = [k for k in affected if k in s.node_xy]
-    if not keys:
-        return None
-    pts_utm = np.array([s.node_xy[k] for k in keys], dtype=np.float64)
-    ring_wgs = _polygon_ring_from_utm_points(pts_utm)
-    if not ring_wgs:
-        return None
-    return {
-        "type": "Feature",
-        "geometry": {"type": "Polygon", "coordinates": [ring_wgs]},
-        "properties": {
-            "nodesAffected": len(keys),
-            "faultFeeder":   s.fault_feeder,
-            "faultCoords":   _format_fault_coords(s.fault_lat, s.fault_lon),
-            "zone":          "fault-impact",
-            "includesLaterals": True,
-        },
-    }
+        return []
+    energized = compute_display_energization(s)
+    feeder_pts: dict[str, list[tuple[float, float]]] = defaultdict(list)
+
+    for cw, keys in zip(s.conductor_wgs, s.conductor_keys):
+        if not _conductor_segment_off(keys, energized, affected):
+            continue
+        feeder = cw["properties"]["feeder"]
+        for lon, lat in cw["geometry"]["coordinates"]:
+            x, y = to_utm(lon, lat)
+            feeder_pts[feeder].append((x, y))
+
+    for fid in s.tie_switch_ids:
+        if s.switch_status.get(fid, 1) != 0:
+            continue
+        node = s.switch_node.get(fid)
+        if not node or node not in s.node_xy or node not in affected:
+            continue
+        if any(nb in affected for nb in s.adjacency.get(node, set())):
+            sw_props = next(
+                (sw["properties"] for sw in s.switches if sw["properties"]["id"] == fid),
+                None,
+            )
+            feeder = (sw_props or {}).get("feeder", s.node_feeder.get(node, "UNK"))
+            x, y = s.node_xy[node]
+            feeder_pts[feeder].append((x, y))
+
+    features: list[dict] = []
+    for feeder, pts in sorted(feeder_pts.items()):
+        if not pts:
+            continue
+        arr = np.array(pts, dtype=np.float64)
+        ring_wgs = _polygon_ring_from_utm_points(arr, min_radius_m=45.0)
+        if not ring_wgs:
+            continue
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [ring_wgs]},
+            "properties": {
+                "feeder":          feeder,
+                "nodesAffected":   sum(
+                    1 for k in affected if s.node_feeder.get(k) == feeder
+                ),
+                "faultFeeder":     s.fault_feeder,
+                "faultCoords":     _format_fault_coords(s.fault_lat, s.fault_lon),
+                "zone":            "fault-impact",
+                "includesLaterals": True,
+            },
+        })
+
+    if not features:
+        keys = [k for k in affected if k in s.node_xy]
+        if keys:
+            pts_utm = np.array([s.node_xy[k] for k in keys], dtype=np.float64)
+            ring_wgs = _polygon_ring_from_utm_points(pts_utm)
+            if ring_wgs:
+                features.append({
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [ring_wgs]},
+                    "properties": {
+                        "feeder":          s.fault_feeder,
+                        "nodesAffected":   len(keys),
+                        "faultFeeder":     s.fault_feeder,
+                        "faultCoords":     _format_fault_coords(s.fault_lat, s.fault_lon),
+                        "zone":            "fault-impact",
+                        "includesLaterals": True,
+                    },
+                })
+    return features
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1426,7 +1722,7 @@ def scada():
     sw_open, sw_total = tie_switch_counts(s)
     return jsonify({
         "faultActive":       bool(s.fault_node),
-        "lineDisplayFull":   not bool(s.fault_node),
+        "lineDisplayFull":   True,
         "faultFeeder":       s.fault_feeder,
         "faultLat":          s.fault_lat,
         "faultLon":          s.fault_lon,
@@ -1447,10 +1743,10 @@ def scada():
 @app.route("/outage-polygon")
 def outage_polygon_route():
     s = get_state()
-    poly = outage_polygon(s)
-    if poly is None:
-        return jsonify({"type": "FeatureCollection", "features": []})
-    return jsonify({"type": "FeatureCollection", "features": [poly]})
+    return jsonify({
+        "type": "FeatureCollection",
+        "features": outage_polygons(s),
+    })
 
 
 # ── Write endpoints ─────────────────────────────────────────────────────────
@@ -1525,7 +1821,7 @@ def set_fault():
 
     # Record outage in SQLite (real event, no mock data)
     affected  = compute_fault_affected_nodes(s)
-    nodes_off = len(affected) if affected else len(s.adjacency) - len(compute_energization(s))
+    nodes_off = len(affected)
     db = get_db()
     cur = db.execute(
         "INSERT INTO outage (feeder, cause, phase, lat, lon, started_at, nodes_affected) "
