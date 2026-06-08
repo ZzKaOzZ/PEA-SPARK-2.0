@@ -35,15 +35,10 @@ Architectural fixes applied (over original appdemo.py):
       Snapping is now feeder-aware (per-feeder cKDTree) and only falls
       back to the global tree if the CB/switch carries no FEEDERID.
 
-  R7  Feeders without any source CB in pscb.json (KUA01 / KUA02 / KUA07
-      and the NA-side stubs of PDA02/06/10) used to render as fully
-      dark — there was no BFS seed for them at all, even though the
-      lines are physically present. A *virtual* source CB ("V-<feeder>")
-      is now synthesised at a representative node of each such feeder.
-      It behaves exactly like a normal CB (toggleable, snapshotable,
-      counted in /scada, recorded in outage history) and is rendered
-      with a distinct dashed-diamond icon so the operator knows it
-      represents an external tie-feed and can switch it off.
+  R7  Feeders without a source CB in ``cball.json`` get a fallback
+      ``V-<feeder>`` only when still unseeded after loading tie-feed CBs.
+      Remote tie markers (BVB/CVB, no connecting line in GIS) snap to the
+      substation hub or KUA grid interconnect instead of a far-end node.
 
   +   Pre-switching snapshot/restore on clear-fault.
   +   /outage-polygon — fault-impact zone hull (only when a fault is active).
@@ -53,12 +48,25 @@ Architectural fixes applied (over original appdemo.py):
 
   R8  Cold start: every source CB (real + virtual) is forced CLOSED via
       ``apply_startup_cb_closed``.  Switches honour GIS ``PRESENTPOS`` from
-      dofps.json; ``deviceClass`` splits F-coded dropouts from other switches.
+      ``dofps.json``; ``deviceClass`` splits F-coded dropouts from switches.
 
   R9  Switching plan: Thai operator brief, per-step ``instructionTh``,
       isolation/restoration sections, fault coords/cause/phase in the plan API.
 
   R10 Fault placement by typed WGS84 coordinates (Lat/Lon) in addition to map click.
+
+  R11 Consolidated GIS layers (``conducps.json``, ``dofps.json``, ``cball.json``,
+      …) driven by ``data/network_config.json`` — one file per asset type.
+
+  R12 ``compute_display_energization``: conductors show the full energised mesh
+      before any fault (switch icons still reflect PRESENTPOS); after a fault is
+      placed, line status follows real switch/CB topology for on-site accuracy.
+
+  R13 UI layers: Switches (S) vs Dropouts (F) on separate map layers; dropouts
+      hidden by default.  Fixed per-feeder colours (``FEEDER_COLOR_MAP``).
+
+  R14 Canonical Thai fault causes (incl. งู) in ``FAULT_CAUSES`` — shared by
+      indexpro, dashboard charts, and SQLite via ``/api/fault-causes``.
 """
 from __future__ import annotations
 import json
@@ -180,6 +188,7 @@ FAULT_CAUSES: tuple[str, ...] = (
     "สภาพอากาศ",
     "นก",
     "กระรอก",
+    "งู",
     "ต้นไม้",
     "ทางมะพร้าว",
     "ไผ่",
@@ -191,6 +200,7 @@ CAUSE_CHART_COLORS: dict[str, str] = {
     "สภาพอากาศ":   "#7c4dff",
     "นก":          "#40c4ff",
     "กระรอก":      "#ff9100",
+    "งู":          "#84cc16",
     "ต้นไม้":      "#3fb950",
     "ทางมะพร้าว":  "#00e676",
     "ไผ่":         "#b388ff",
@@ -1275,6 +1285,15 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev-only-do-not-use-in-prod")
 USERNAME = os.environ.get("PEA_USERNAME", "PEAPJK")
 PASSWORD = os.environ.get("PEA_PASSWORD", "1234")
+
+
+@app.route("/api/fault-causes")
+def api_fault_causes():
+    """Canonical outage causes for indexpro dropdown and dashboard charts."""
+    return jsonify({
+        "causes":      list(FAULT_CAUSES),
+        "causeColors": dict(CAUSE_CHART_COLORS),
+    })
 
 
 @app.route("/api/network-config")
