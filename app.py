@@ -405,6 +405,17 @@ def switch_device_class(facility_id: str) -> str:
     return "dropout" if "f" in facility_id.lower() else "switch"
 
 
+def tie_switch_counts(s: NetworkState) -> tuple[int, int]:
+    """Open/total for tie switches only (excludes F-coded dropouts)."""
+    tie_ids = [
+        sw["properties"]["id"]
+        for sw in s.switches
+        if sw["properties"].get("deviceClass") != "dropout"
+    ]
+    open_n = sum(1 for fid in tie_ids if s.switch_status.get(fid, 1) == 0)
+    return open_n, len(tie_ids)
+
+
 def _add_virtual_source_cb(s: NetworkState, feeder: str) -> bool:
     """Synthesise a tie-feed CB for feeders with conductors but no pscb record."""
     if feeder in s.feeder_cbs or s.feeder_edge_count.get(feeder, 0) == 0:
@@ -816,8 +827,8 @@ def build_state() -> NetworkState:
     print(f"  nodes      : {len(s.nodes):,}", flush=True)
     n_do = sum(1 for sw in s.switches if sw["properties"].get("deviceClass") == "dropout")
     n_sw = len(s.switches) - n_do
-    n_open = sum(1 for v in s.switch_status.values() if v == 0)
-    print(f"  switches   : {n_sw:,} · dropouts (F): {n_do:,} · open: {n_open:,}", flush=True)
+    n_open, _ = tie_switch_counts(s)
+    print(f"  tie switches: {n_sw:,} · dropouts (F): {n_do:,} · open: {n_open:,}", flush=True)
     print(f"  substations: {len(s.substations):,}", flush=True)
     if cb_skipped_remote:
         print(f"  CB skipped (off-map feeders): {cb_skipped_remote}", flush=True)
@@ -1412,6 +1423,7 @@ def scada():
     s = get_state()
     energized = compute_display_energization(s)
     _, feeders_affected, feeders_source_open = build_live_conductors(s)
+    sw_open, sw_total = tie_switch_counts(s)
     return jsonify({
         "faultActive":       bool(s.fault_node),
         "lineDisplayFull":   not bool(s.fault_node),
@@ -1421,8 +1433,8 @@ def scada():
         "faultCoords":       _format_fault_coords(s.fault_lat, s.fault_lon),
         "faultCause":        s.fault_cause,
         "faultPhase":        s.fault_phase,
-        "switchOpen":        sum(1 for v in s.switch_status.values() if v == 0),
-        "switchTotal":       len(s.switch_status),
+        "switchOpen":        sw_open,
+        "switchTotal":       sw_total,
         "cbOpen":            sum(1 for v in s.cb_status.values() if v == 0),
         "cbTotal":           len(s.cb_status),
         "nodesOn":           len(energized),
