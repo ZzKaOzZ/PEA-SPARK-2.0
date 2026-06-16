@@ -5,6 +5,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>PEA SPARK · PEA Prachuap</title>
+<link rel="icon" href="/static/logo.png" type="image/png" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -17,8 +18,9 @@ html,body{height:100%;font-family:'Segoe UI',system-ui,sans-serif;background:#0d
 #sidebar{width:370px;background:#161b22;border-left:1px solid #30363d;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
 
 header{background:#161b22;border-bottom:1px solid #30363d;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;z-index:1100}
-.brand{display:flex;align-items:center;gap:9px}
-.brand-icon{width:34px;height:34px;border-radius:8px;background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);display:flex;align-items:center;justify-content:center;font-size:17px}
+.brand{display:flex;align-items:center;gap:10px;flex-shrink:0;min-width:0}
+.brand-logo{height:40px;width:auto;max-width:120px;display:block;object-fit:contain;flex-shrink:0}
+.brand-text{display:flex;flex-direction:column;gap:1px}
 .brand-title{font-size:15px;font-weight:700;letter-spacing:.03em}
 .brand-sub{font-size:10px;color:#768390;font-family:monospace}
 .stats{display:flex;gap:7px;flex-wrap:wrap}
@@ -95,6 +97,7 @@ button:disabled{opacity:.35;cursor:default}
 .st-card{background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:9px 11px}
 .st-card.warn-b{border-color:rgba(210,153,34,.4)}
 .st-card.bad-b{border-color:rgba(248,81,73,.4)}
+.st-card.good-b{border-color:rgba(63,185,80,.45)}
 .st-title{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:#768390;margin-bottom:7px;display:flex;align-items:center;gap:4px}
 .st-nums{display:flex;gap:14px}
 .st-num{display:flex;flex-direction:column}
@@ -119,20 +122,31 @@ button:disabled{opacity:.35;cursor:default}
 .sw-filter button{flex:1;padding:4px 6px;font-size:10px;border:1px solid #30363d;background:#0d1117;color:#768390;border-radius:4px;cursor:pointer}
 .sw-filter button.on{color:#00e5ff;border-color:rgba(0,229,255,.45);background:rgba(0,229,255,.06)}
 .m-rc{width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #ffd600;filter:drop-shadow(0 0 3px rgba(255,214,0,.7))}
+.m-rc-open{border-bottom-color:#ef4444;filter:drop-shadow(0 0 4px rgba(239,68,68,.85))}
 .m-fault{width:18px;height:18px;border-radius:50%;background:radial-gradient(circle,#f85149,#991b1b);border:2px solid #fff;box-shadow:0 0 10px rgba(248,81,73,.9);animation:blink 1s infinite}
 
-#plan-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3000;backdrop-filter:blur(2px)}
-#plan-panel{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:3100;background:#161b22;border:1px solid #30363d;border-radius:10px;width:min(640px,95vw);max-height:85vh;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6)}
-#plan-backdrop.open,#plan-panel.open{display:flex}
+:root{--plan-panel-w:380px}
+
+#plan-backdrop{display:none}
+#plan-panel{
+  display:none;position:fixed;left:0;z-index:2050;
+  width:var(--plan-panel-w);flex-direction:column;
+  background:#161b22;border-right:1px solid #30363d;
+  box-shadow:4px 0 24px rgba(0,0,0,.4);
+}
+#plan-panel.open{display:flex}
+#map-wrap.plan-docked{margin-left:var(--plan-panel-w)}
+#map-wrap{transition:margin-left .15s ease}
 .plan-header{padding:14px 16px 10px;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:10px}
-.plan-title{font-size:14px;font-weight:600;color:#a78bfa;flex:1}
+.plan-title{font-size:13px;font-weight:600;color:#a78bfa;flex:1;line-height:1.35}
 .plan-close{background:transparent;border:none;color:#768390;font-size:18px;padding:0 4px;cursor:pointer}
 .plan-close:hover{color:#c9d1d9}
 .plan-summary{padding:10px 16px;background:rgba(139,92,246,.08);border-bottom:1px solid #30363d;font-size:11px;color:#c9d1d9;font-family:monospace;line-height:1.6}
 .plan-summary b{color:#a78bfa}
 .plan-meta{display:flex;gap:8px;flex-wrap:wrap;padding:8px 16px;border-bottom:1px solid #30363d}
 .meta-chip{padding:3px 10px;border-radius:20px;font-size:10px;font-family:monospace;border:1px solid #30363d;background:rgba(255,255,255,.04)}
-.plan-steps{flex:1;overflow-y:auto;padding:10px 12px}
+.plan-body{flex:1;overflow-y:auto;min-height:0}
+.plan-steps{padding:10px 12px}
 .plan-step{display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid #30363d;border-radius:7px;margin-bottom:7px;transition:.2s}
 .plan-step.done{opacity:.45;border-color:#238636;background:rgba(35,134,54,.06)}
 .plan-step.active-step{border-color:#a78bfa;background:rgba(139,92,246,.07)}
@@ -145,7 +159,7 @@ button:disabled{opacity:.35;cursor:default}
 .step-feeder{font-size:10px;color:#768390;margin-top:2px}
 .step-reason{font-size:11px;color:#c9d1d9;margin-top:3px}
 .step-restore{font-size:11px;color:#3fb950;font-family:monospace;font-weight:600;margin-top:3px}
-.plan-footer{padding:10px 14px;border-top:1px solid #30363d;display:flex;align-items:center;gap:8px}
+.plan-footer{padding:10px 14px;border-top:1px solid #30363d;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 #plan-progress{flex:1;font-size:11px;color:#768390;font-family:monospace}
 #btn-exec-all{padding:6px 16px;font-size:12px;font-weight:600;background:#7c3aed;color:#fff;border-color:#7c3aed;border-radius:5px}
 #btn-exec-all:hover{background:#6d28d9}
@@ -158,8 +172,26 @@ button:disabled{opacity:.35;cursor:default}
 #fault-form select,#fault-form input{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:12px;font-family:monospace;margin-bottom:8px;width:160px}
 #fault-form .ff-coords{display:flex;gap:6px;margin-bottom:6px}
 #fault-form .ff-coords input{width:78px;margin-bottom:0}
-#fault-form .ff-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
 #fault-form .ff-hint{font-size:10px;color:#768390;margin:4px 0 8px;line-height:1.4}
+#fault-form .ff-feeder-wrap{display:none;margin-bottom:8px}
+#fault-form .ff-feeder-wrap.show{display:block}
+#fault-form .ff-feeder-list{display:flex;flex-direction:column;gap:4px;max-height:140px;overflow-y:auto;margin-bottom:4px}
+#fault-form .ff-feeder-list label{display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer;padding:5px 8px;border-radius:4px;background:#1c2128;border:1px solid #30363d}
+#fault-form .ff-feeder-list label:hover{border-color:#484f58}
+#fault-form .ff-feeder-list input{accent-color:#3fb950;flex-shrink:0}
+#fault-form .ff-feeder-wrap .ff-feeder-hint{font-size:10px;color:#d29922;margin-top:4px;line-height:1.35}
+#fault-form .ff-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+#maint-form{display:none;position:absolute;top:60px;left:50%;transform:translateX(-50%);z-index:2050;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.5);min-width:320px}
+#maint-form label{display:block;color:#768390;font-size:10px;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em}
+#maint-form input{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:12px;font-family:monospace;margin-bottom:8px;width:100%;box-sizing:border-box}
+#maint-form .ff-coords{display:flex;gap:6px;margin-bottom:6px}
+#maint-form .ff-coords input{width:50%;margin-bottom:0}
+#maint-form .ff-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+#maint-form .ff-hint{font-size:10px;color:#768390;margin:4px 0 8px;line-height:1.4}
+#maint-banner{display:none;position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:2000;background:#d29922;color:#0d1117;padding:6px 14px;border-radius:5px;font-size:12px;font-weight:600;pointer-events:none}
+.m-maint-start{width:14px;height:14px;border-radius:50%;background:#3fb950;border:2px solid #fff;box-shadow:0 0 8px rgba(63,185,80,.8)}
+.m-maint-end{width:14px;height:14px;border-radius:50%;background:#d29922;border:2px solid #fff;box-shadow:0 0 8px rgba(210,153,34,.8)}
+.m-maint-line{stroke:#d29922;stroke-width:3;stroke-dasharray:6 4;opacity:.85}
 .plan-next-hint{margin:0 16px 8px;padding:8px 10px;border:1px solid rgba(139,92,246,.45);border-radius:6px;background:rgba(139,92,246,.1);font-size:12px;color:#e6edf3;line-height:1.5}
 .plan-next-hint b{color:#a78bfa}
 .plan-section-label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#768390;padding:6px 16px 2px}
@@ -176,8 +208,8 @@ button:disabled{opacity:.35;cursor:default}
 <div id="app">
   <header>
     <div class="brand">
-      <div class="brand-icon">⚡</div>
-      <div>
+      <img class="brand-logo" src="/static/logo.png" alt="PEA SPARK" />
+      <div class="brand-text">
         <div class="brand-title">PEA SPARK</div>
         <div class="brand-sub">Provincial Electricity Authority · Prachuap Khiri Khan</div>
       </div>
@@ -198,9 +230,13 @@ button:disabled{opacity:.35;cursor:default}
       <a class="btn-link" href="/dashboard">📊 Dashboard</a>
       <button class="btn-ghost btn-sm" onclick="refreshAll()" title="Refresh">↺</button>
       <button class="btn-out btn-sm" id="btn-arm" onclick="toggleArm()">📍 Place fault</button>
+      <button class="btn-out btn-sm" id="btn-maint" onclick="toggleMaint()">🔧 บำรุงรักษา</button>
       <button class="btn-success btn-sm" id="btn-clear" onclick="clearFault()" disabled>Clear fault</button>
+      <button class="btn-success btn-sm" id="btn-clear-maint" onclick="clearMaintenance()" disabled style="display:none">ล้างโซนงาน</button>
       <button class="btn-plan btn-sm" id="btn-plan" onclick="openPlanModal()" disabled
               title="วิเคราะห์ switching เพื่อลดผลกระทบ">⚙ Generate Plan</button>
+      <button class="btn-plan btn-sm" id="btn-maint-plan" onclick="openMaintPlanModal()" disabled style="display:none"
+              title="วางแผนสวิตช์สำหรับงานบำรุงรักษา">⚙ แผนสวิตช์งาน</button>
       <button class="logout-btn" onclick="location.href='/logout'">Logout</button>
     </div>
   </header>
@@ -209,7 +245,7 @@ button:disabled{opacity:.35;cursor:default}
     <div id="map-wrap">
       <div id="map"></div>
       <div id="fault-overlay" onclick="handleFaultClick(event)"></div>
-      <div id="fault-banner">⚠ คลิกแผนที่ หรือกรอกพิกัด WGS84 — เลือกสาเหตุ/เฟสก่อนวางจุดฟอลต์</div>
+      <div id="fault-banner">⚠ กรอก/คลิกพิกัด → เลือกฟีดเดอร์จากรายการ → กด 「ตั้งจากพิกัด」 · สาเหตุ/เฟส</div>
       <div id="fault-form">
         <label>สาเหตุ (Cause)</label>
         <select id="ff-cause"></select>
@@ -219,14 +255,44 @@ button:disabled{opacity:.35;cursor:default}
           <option>AB</option><option>BC</option><option>CA</option>
         </select>
         <label>พิกัดจุดฟอลต์ (Lat, Lon · WGS84)</label>
-        <div class="ff-hint">ตัวอย่าง พื้นที่ประจวบ: ละติจูด ~11.81 · ลองจิจูด ~99.79</div>
+        <div class="ff-hint">พิกัดบนถนนข้างเส้นทางสายได้ — ระบบจะ snap ไปที่สายอัตโนมัติภายในรัศมี 20 m<br>ตัวอย่าง พื้นที่ประจวบ: Lat ~11.81 · Lon ~99.79</div>
         <div class="ff-coords">
           <input id="ff-lat" type="text" inputmode="decimal" placeholder="Lat" title="ละติจูด" />
           <input id="ff-lon" type="text" inputmode="decimal" placeholder="Lon" title="ลองจิจูด" />
         </div>
+        <div id="ff-feeder-wrap" class="ff-feeder-wrap">
+          <label>ฟีดเดอร์ (เลือกได้มากกว่า 1)</label>
+          <div id="ff-feeder-list" class="ff-feeder-list"></div>
+          <div id="ff-feeder-hint" class="ff-feeder-hint"></div>
+        </div>
         <div class="ff-actions">
           <button type="button" class="btn-success btn-sm" onclick="setFaultFromCoords()">📌 ตั้งจากพิกัด</button>
           <button type="button" class="btn-ghost btn-sm" onclick="fillMapCenterCoords()">⊙ ใช้จุดกลางแผนที่</button>
+        </div>
+      </div>
+
+      <div id="maint-banner">🔧 โหมดบำรุงรักษา — กรอกพิกัดเริ่มต้น/สิ้นสุดและข้อมูลงาน</div>
+      <div id="maint-form">
+        <div style="font-weight:600;color:#d29922;margin-bottom:8px">บำรุงรักษาระบบจำหน่าย</div>
+        <label>ชื่องาน</label>
+        <input id="mf-job-name" type="text" placeholder="เช่น เปลี่ยนสายไฟฟ้าอากาศ" />
+        <label>หมายเลขงาน</label>
+        <input id="mf-job-no" type="text" placeholder="เช่น WO-2026-001" />
+        <label>พิกัดเริ่มต้น (Lat, Lon · WGS84)</label>
+        <div class="ff-coords">
+          <input id="mf-start-lat" type="text" inputmode="decimal" placeholder="Lat" />
+          <input id="mf-start-lon" type="text" inputmode="decimal" placeholder="Lon" />
+        </div>
+        <label>พิกัดสิ้นสุด (Lat, Lon · WGS84)</label>
+        <div class="ff-coords">
+          <input id="mf-end-lat" type="text" inputmode="decimal" placeholder="Lat" />
+          <input id="mf-end-lon" type="text" inputmode="decimal" placeholder="Lon" />
+        </div>
+        <div class="ff-hint">กำหนดบริเวณปฏิบัติงานระหว่างจุดเริ่ม–สิ้นสุด เพื่อวางแผนสวิตช์</div>
+        <div class="ff-actions">
+          <button type="button" class="btn-success btn-sm" onclick="setMaintenanceFromCoords()">📌 กำหนดโซนงาน</button>
+          <button type="button" class="btn-ghost btn-sm" onclick="fillMaintStartFromMap()">⊙ จุดเริ่ม=กลางแผนที่</button>
+          <button type="button" class="btn-ghost btn-sm" onclick="fillMaintEndFromMap()">⊙ จุดสิ้นสุด=กลางแผนที่</button>
         </div>
       </div>
 
@@ -274,20 +340,24 @@ button:disabled{opacity:.35;cursor:default}
 <div id="plan-panel">
   <div class="plan-header">
     <span style="font-size:18px">⚙</span>
-    <div class="plan-title">Switching Plan — Fault Isolation & Service Restoration</div>
+    <div class="plan-title">แผนสวิตช์ · แยกฟอลต์ &amp; คืนไฟ</div>
     <button class="plan-close" onclick="closePlanModal()">✕</button>
   </div>
   <div class="plan-summary" id="plan-summary">กำลังวิเคราะห์…</div>
   <div class="plan-next-hint" id="plan-next-hint" style="display:none"></div>
   <div class="plan-meta" id="plan-meta"></div>
-  <div class="plan-steps" id="plan-steps"></div>
+  <div class="plan-body" id="plan-body">
+    <div class="plan-steps" id="plan-steps"></div>
+    <div class="plan-steps" id="plan-norm-steps"></div>
+  </div>
   <div class="plan-footer">
     <div>
       <div id="plan-progress">—</div>
       <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
     </div>
     <button class="btn-copy btn-sm" id="btn-copy-plan" onclick="copyPlanDispatch()" disabled>📋 คัดลอกแผน</button>
-    <button id="btn-exec-all" onclick="executeAll()" disabled>▶ ดำเนินการทุกขั้น</button>
+    <button id="btn-exec-all" onclick="executeAll()" disabled>▶ ดำเนินการแผน</button>
+    <button class="btn-plan btn-sm" id="btn-exec-norm" onclick="executeAllNorm()" disabled style="display:none">▶ คืนระบบเดิม</button>
     <button class="btn-out btn-sm" onclick="closePlanModal()">ปิด</button>
   </div>
 </div>
@@ -296,10 +366,12 @@ button:disabled{opacity:.35;cursor:default}
 const D = {
   conductors:[], switches:[], reclosers:[], transformers:[], substations:[],
   feeders:[], scada:null, outagePoly:null,
-  fault:{active:false,feeder:null,lat:null,lon:null},
-  feederFilter:null, swClassFilter:null, selectedSwitch:null, armMode:false,
+  faultMapClickSnapM:200, faultCoordSnapM:20,
+  fault:{active:false,feeder:null,feeders:[],lat:null,lon:null},
+  maint:{active:false,feeder:null,startLat:null,startLon:null,endLat:null,endLon:null,jobName:null,jobNumber:null},
+  feederFilter:null, swClassFilter:null, selectedSwitch:null, armMode:false, maintMode:false,
   layers:{switches:true,dropouts:false,reclosers:true,transformers:false,substations:true,outage:true},
-  plan:null, planDone:0,
+  plan:null, planDone:0, planNormDone:0,
   mapBusy:false,           // R3: true while zooming/panning
   pendingRefresh:false,    // R3: coalesce refreshes during interaction
 };
@@ -324,6 +396,7 @@ const lyr = {
   substations: L.layerGroup().addTo(map),
   outage:      L.layerGroup().addTo(map),
   fault:       L.layerGroup().addTo(map),
+  maint:       L.layerGroup().addTo(map),
 };
 
 const j = url => fetch(url).then(r=>r.json());
@@ -336,48 +409,81 @@ function fillCauseOptions(causes){
 }
 
 async function loadAll(){
-  const [co,sw,rc,xf,sub,fd,sc,op,fc] = await Promise.all([
+  const [co,sw,rc,xf,sub,fd,sc,op,fc,nc] = await Promise.all([
     j("/conductor"),j("/switches"),j("/reclosers"),
     j("/transformers"),j("/substations"),j("/feeders"),j("/scada"),j("/outage-polygon"),
-    j("/api/fault-causes"),
+    j("/api/fault-causes"),j("/api/network-config"),
   ]);
   fillCauseOptions(fc.causes);
+  if(nc?.faultMapClickSnapM) D.faultMapClickSnapM=nc.faultMapClickSnapM;
+  if(nc?.faultCoordSnapM) D.faultCoordSnapM=nc.faultCoordSnapM;
   D.conductors=co.features; D.switches=sw.features; D.reclosers=rc.features;
   D.transformers=xf.features; D.substations=sub.features;
   D.feeders=fd.feeders; D.scada=sc; D.outagePoly=op;
   // R5: hydrate fault.lat/lon from /scada
   if(sc.faultActive){
-    D.fault={active:true,feeder:sc.faultFeeder,
+    D.fault={active:true,feeder:sc.faultFeeder,feeders:sc.faultFeeders||[sc.faultFeeder].filter(Boolean),
              lat:sc.faultLat??null,lon:sc.faultLon??null};
   }
-  renderAll(); fitBounds(); drawFault();
+  if(sc.maintActive){
+    D.maint={active:true,feeder:sc.maintFeeder,
+      startLat:sc.maintStartLat,startLon:sc.maintStartLon,
+      endLat:sc.maintEndLat,endLon:sc.maintEndLon,
+      jobName:sc.maintJobName,jobNumber:sc.maintJobNumber};
+  }
+  renderAll(); fitBounds(); drawFault(); drawMaintenance();
 }
 
-async function refreshLive(){
-  if(D.mapBusy){D.pendingRefresh=true;return;}     // R3
-  const [co,sw,sub,sc,op] = await Promise.all([
+async function refreshLive(opts={}){
+  const force=opts.force===true;
+  if(!force&&D.mapBusy){D.pendingRefresh=true;return;}     // R3
+  const [co,sw,sub,sc,op,rc] = await Promise.all([
     j("/conductor"),j("/switches"),j("/substations"),j("/scada"),j("/outage-polygon"),
+    j("/reclosers"),
   ]);
   D.conductors=co.features; D.switches=sw.features; D.substations=sub.features;
+  D.reclosers=rc.features;
   D.scada=sc; D.outagePoly=op;
   // R5: keep fault marker coords in sync with server
   if(sc.faultActive && (D.fault.lat==null||D.fault.lon==null)){
-    D.fault={active:true,feeder:sc.faultFeeder,lat:sc.faultLat,lon:sc.faultLon};
+    D.fault={active:true,feeder:sc.faultFeeder,feeders:sc.faultFeeders||[sc.faultFeeder].filter(Boolean),
+      lat:sc.faultLat,lon:sc.faultLon};
     drawFault();
   }
   if(!sc.faultActive && D.fault.active){
-    D.fault={active:false,feeder:null,lat:null,lon:null};
+    D.fault={active:false,feeder:null,feeders:[],lat:null,lon:null};
     D.outagePoly={type:"FeatureCollection",features:[]};
     drawFault();
   }
-  drawConductors(); drawSwitches(); drawSubstations(); drawOutage();
+  if(sc.maintActive){
+    D.maint={active:true,feeder:sc.maintFeeder,
+      startLat:sc.maintStartLat,startLon:sc.maintStartLon,
+      endLat:sc.maintEndLat,endLon:sc.maintEndLon,
+      jobName:sc.maintJobName,jobNumber:sc.maintJobNumber};
+    drawMaintenance();
+  }
+  if(!sc.maintActive && D.maint.active){
+    D.maint={active:false,feeder:null,startLat:null,startLon:null,endLat:null,endLon:null,jobName:null,jobNumber:null};
+    if(!sc.faultActive) D.outagePoly={type:"FeatureCollection",features:[]};
+    drawMaintenance();
+  }
+  drawConductors(); drawSwitches(); drawReclosers(); drawSubstations(); drawOutage(); drawMaintenance();
   updateHeader(); renderStatus(); renderSwitches();
+  const banner=document.getElementById("fault-banner");
+  if(banner && sc.faultActive){
+    banner.textContent=sc.lineDisplayPhysical
+      ? "⚡ Real-time — สีสาย=ฟีดเดอร์ต้นทางจ่ายจริง · ดูแถบ Status ว่าใช้ฟีดเดอร์ไหนอยู่"
+      : sc.lineDisplayIsolation
+      ? "🔧 แยกวงจรแล้ว — โพลีก้อนยังเท่าเดิมจนกว่าจะจ่ายย้อนกลับ (ปิด tie / เปิด sectional)"
+      : "⚠ กรอกพิกัดจากหน้างาน (ห่างจากสายไม่เกิน 20 m) · เลือกฟีดเดอร์ถ้ามีหลายสาย · สาเหตุ/เฟส · คลิกแผนที่หรือกดตั้งจากพิกัด";
+  }
+  scheduleRefreshLive();
 }
 const refreshAll = ()=>loadAll();
 
 function renderAll(){
   drawConductors(); drawSwitches(); drawReclosers(); drawTransformers();
-  drawSubstations(); drawOutage();
+  drawSubstations(); drawOutage(); drawFault(); drawMaintenance();
   updateHeader(); renderSwitches(); renderFeeders(); renderStatus();
 }
 
@@ -389,9 +495,11 @@ function drawConductors(){
   const sorted=[...D.conductors].sort((a,b)=>(a.properties.status==="off"?1:0)-(b.properties.status==="off"?1:0));
   for(const f of sorted){
     if(ff && f.properties.feeder!==ff) continue;
-    const off=f.properties.status==="off";
+    const p=f.properties;
+    const off=p.status==="off";
     const pts=f.geometry.coordinates.map(([lo,la])=>[la,lo]);
-    L.polyline(pts,{color:off?"#3a3f4a":f.properties.color,
+    const lineCol=off?"#3a3f4a":(p.displayColor||p.color);
+    L.polyline(pts,{color:lineCol,
       weight:off?1.5:2.1,opacity:off?.45:.95,dashArray:off?"4 4":null}).addTo(lyr.conductors);
   }
 }
@@ -424,10 +532,10 @@ function drawSwitches(){
 }
 function swPopup(f){
   const p=f.properties,cl=p.status===1;
-  const typeLbl=p.deviceClass==="dropout"?"Dropout (F)":"Switch";
+  const typeLbl=p.isRcBypass?"RC Bypass tie":(p.deviceClass==="dropout"?"Dropout (F)":"Switch");
   return `<div style="font-family:monospace;font-size:11px;min-width:175px">
     <b>${p.id}</b><br>
-    Type:<span style="color:${p.deviceClass==="dropout"?"#fbbf24":"#00e5ff"}">${typeLbl}</span>
+    Type:<span style="color:${p.isRcBypass?"#ffd600":p.deviceClass==="dropout"?"#fbbf24":"#00e5ff"}">${typeLbl}</span>
      · State:<span style="color:${cl?"#3fb950":"#f85149"}">${p.state}</span>
      · Feeder:${p.feeder} · ${p.kind}<br>
     ${p.presentPos!=null?`PRESENTPOS:<span style="color:#768390">${p.presentPos}</span><br>`:""}
@@ -444,8 +552,19 @@ function drawReclosers(){
   for(const f of D.reclosers){
     const [lo,la]=f.geometry.coordinates;
     const p=f.properties;
-    L.marker([la,lo],{icon:di('<div class="m-rc"></div>',[10,9],[5,9])})
-      .bindPopup(`<b>Recloser ${p.id}</b><br>Feeder:${p.feeder}<br><span style="color:#768390">${p.location||""}</span>`)
+    const cl=p.status===1;
+    L.marker([la,lo],{icon:di(`<div class="m-rc${cl?"":" m-rc-open"}"></div>`,[10,9],[5,9])})
+      .bindPopup(`<div style="font-family:monospace;font-size:11px;min-width:200px">
+        <b style="color:#ffd600">⚡ Recloser</b> · <b>${p.id}</b><br>
+        Feeder:<span style="color:#00e5ff">${p.feeder}</span> ·
+        State:<span style="color:${cl?"#3fb950":"#ef4444"}">${p.state|| (cl?"CLOSE":"OPEN")}</span>
+        ${p.location?`<br><span style="color:#768390">${p.location}</span>`:""}
+        <div style="font-size:10px;color:#768390;margin-top:4px">ปลด recloser แทนเปิด tie ที่คุม section นี้</div>
+        <button onclick="doToggleRc('${p.id}')" style="margin-top:6px;width:100%;padding:4px;
+          border:1px solid ${cl?"#ef4444":"#3fb950"};background:transparent;
+          color:${cl?"#ef4444":"#3fb950"};border-radius:4px;cursor:pointer">
+          ${cl?"ปลด Recloser (OPEN)":"ปิด Recloser (CLOSE)"}
+        </button></div>`)
       .addTo(lyr.reclosers);
   }
 }
@@ -505,15 +624,18 @@ function drawSubstations(){
 function drawOutage(){
   lyr.outage.clearLayers();
   const sc=D.scada;
-  if(!D.layers.outage || !sc?.faultActive) return;
+  if(!D.layers.outage || (!sc?.faultActive && !sc?.maintActive)) return;
   if(!D.outagePoly?.features?.length) return;
   for(const f of D.outagePoly.features){
     const ring=f.geometry.coordinates[0].map(([lo,la])=>[la,lo]);
     const p=f.properties||{};
-    L.polygon(ring,{color:"#f85149",weight:2,dashArray:"6 4",fillColor:"#f85149",fillOpacity:.22})
+    const fdCol=D.feeders.find(x=>x.id===p.feeder)?.color||"#f85149";
+    const zoneLabel=sc.maintActive&&!sc.faultActive?"โซนบำรุงรักษา":"โซนไฟดับ (ตามสายจริง)";
+    L.polygon(ring,{color:fdCol,weight:2,dashArray:"6 4",fillColor:fdCol,fillOpacity:.2})
       .bindPopup(`<div style="font-family:monospace;font-size:11px">
-        <b style="color:#f85149">โซนผลกระทบจากจุดฟอลต์</b><br>
-        ฟีดเดอร์: <b>${p.faultFeeder||sc.faultFeeder||"?"}</b><br>
+        <b style="color:#f85149">${zoneLabel}</b><br>
+        ฟีดเดอร์โซนนี้: <b>${p.feeder||"?"}</b><br>
+        ${sc.faultActive?`จุดฟอลต์: <b>${formatFaultFeeders(sc.faultFeeders, sc.faultFeeder)}</b><br>`:""}
         ${p.faultCoords?`พิกัด: ${p.faultCoords}<br>`:""}
         โหนดในพื้นที่: ${(p.nodesAffected||0).toLocaleString()}</div>`)
       .addTo(lyr.outage);
@@ -538,6 +660,35 @@ function drawFault(){
   }
 }
 
+function drawMaintenance(){
+  lyr.maint.clearLayers();
+  const m=D.maint;
+  if(!m.active) return;
+  if(m.startLat!=null && m.startLon!=null){
+    L.marker([m.startLat,m.startLon],{icon:di('<div class="m-maint-start"></div>',[14,14])})
+      .bindPopup(`<div style="font-family:monospace;font-size:11px">
+        <b style="color:#3fb950">● จุดเริ่มงาน</b><br>
+        ${m.startLat.toFixed(6)}, ${m.startLon.toFixed(6)}</div>`)
+      .addTo(lyr.maint);
+  }
+  if(m.endLat!=null && m.endLon!=null){
+    L.marker([m.endLat,m.endLon],{icon:di('<div class="m-maint-end"></div>',[14,14])})
+      .bindPopup(`<div style="font-family:monospace;font-size:11px">
+        <b style="color:#d29922">● จุดสิ้นสุดงาน</b><br>
+        ${m.endLat.toFixed(6)}, ${m.endLon.toFixed(6)}</div>`)
+      .addTo(lyr.maint);
+  }
+  if(m.startLat!=null && m.startLon!=null && m.endLat!=null && m.endLon!=null){
+    L.polyline([[m.startLat,m.startLon],[m.endLat,m.endLon]],
+      {color:"#d29922",weight:3,dashArray:"6 4",opacity:.85})
+      .bindPopup(`<div style="font-family:monospace;font-size:11px">
+        <b style="color:#d29922">โซนบำรุงรักษา</b><br>
+        งาน: ${m.jobNumber||"—"} · ${m.jobName||"—"}<br>
+        ฟีดเดอร์: <b>${m.feeder||"?"}</b></div>`)
+      .addTo(lyr.maint);
+  }
+}
+
 function parseCoordPair(latRaw, lonRaw){
   let latS=String(latRaw||"").trim();
   let lonS=String(lonRaw||"").trim();
@@ -556,12 +707,91 @@ function fillMapCenterCoords(){
   const c=map.getCenter();
   document.getElementById("ff-lat").value=c.lat.toFixed(6);
   document.getElementById("ff-lon").value=c.lng.toFixed(6);
+  scheduleNearbyFeeders(c.lat, c.lng);
+}
+
+let _ffNearbyTimer=null;
+let _ffNearbySeq=0;
+
+function scheduleNearbyFeeders(lat, lon, maxM){
+  clearTimeout(_ffNearbyTimer);
+  const snapM=maxM ?? D.faultCoordSnapM ?? 20;
+  _ffNearbyTimer=setTimeout(()=>refreshNearbyFeeders(lat, lon, snapM), 350);
+}
+
+function selectedFaultFeeders(){
+  const list=document.getElementById("ff-feeder-list");
+  if(!list) return [];
+  return [...list.querySelectorAll('input[name="ff-feeder"]:checked')].map(cb=>cb.value);
+}
+
+function selectedFaultFeeder(){
+  const arr=selectedFaultFeeders();
+  return arr.length?arr[0]:null;
+}
+
+function formatFaultFeeders(feeders, primary){
+  const arr=(feeders&&feeders.length)?feeders:(primary?[primary]:[]);
+  if(!arr.length) return "none";
+  return arr.length===1?arr[0]:arr.join(" · ");
+}
+
+async function refreshNearbyFeeders(lat, lon, maxM){
+  const snapM=maxM ?? D.faultCoordSnapM ?? 20;
+  const seq=++_ffNearbySeq;
+  const wrap=document.getElementById("ff-feeder-wrap");
+  const list=document.getElementById("ff-feeder-list");
+  const hint=document.getElementById("ff-feeder-hint");
+  if(!wrap||!list) return;
+
+  if(!Number.isFinite(lat)||!Number.isFinite(lon)){
+    wrap.classList.remove("show");
+    list.innerHTML="";
+    if(hint) hint.textContent="";
+    return;
+  }
+
+  let data;
+  try{
+    data=await j(`/fault/nearby?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&maxM=${encodeURIComponent(snapM)}`);
+  }catch(_e){
+    return;
+  }
+  if(seq!==_ffNearbySeq) return;
+
+  const cands=data.candidates||[];
+  if(!cands.length){
+    wrap.classList.remove("show");
+    list.innerHTML="";
+    if(hint) hint.textContent="";
+    return;
+  }
+
+  wrap.classList.add("show");
+  const prev=new Set(selectedFaultFeeders());
+  list.innerHTML=cands.map(c=>{
+    const checked=prev.has(c.feeder)||(!prev.size&&c.feeder===data.suggested);
+    return `<label><input type="checkbox" name="ff-feeder" value="${c.feeder}"${checked?" checked":""}>`
+      +`<span>${c.feeder} · ~${c.distM} m</span></label>`;
+  }).join("");
+  if(hint){
+    hint.textContent="เลือกฟีดเดอร์ที่เกี่ยวข้อง (ติ๊กได้หลายสาย) แล้วกด 「ตั้งจากพิกัด」";
+  }
 }
 
 async function setFaultFromCoords(){
   const pair=parseCoordPair(document.getElementById("ff-lat").value,
                             document.getElementById("ff-lon").value);
   if(!pair){ alert("กรุณากรอกพิกัด Lat/Lon ให้ถูกต้อง (WGS84)"); return; }
+  const list=document.getElementById("ff-feeder-list");
+  const needsFeederList=!list?.querySelector('input[name="ff-feeder"]');
+  if(needsFeederList){
+    await refreshNearbyFeeders(pair.lat, pair.lon, D.faultCoordSnapM);
+  }
+  if(!selectedFaultFeeders().length){
+    alert("กรุณาเลือกฟีดเดอร์อย่างน้อย 1 รายการก่อนตั้งฟอลต์");
+    return;
+  }
   await doSetFault(pair.lat, pair.lon);
   map.panTo([pair.lat, pair.lon]);
 }
@@ -577,18 +807,29 @@ function fitBounds(){
   if(b.isValid()){map.fitBounds(b,{padding:[40,40]});fitted=true;}
 }
 
+function energizedPct(sc){
+  if(sc.customersTotal>0&&(sc.faultActive||sc.maintActive))
+    return Math.round(sc.customersOn/sc.customersTotal*100);
+  const tot=sc.nodesOn+sc.nodesOff;
+  return tot>0?Math.round(sc.nodesOn/tot*100):0;
+}
+
 function updateHeader(){
   const sc=D.scada; if(!sc) return;
-  const tot=sc.nodesOn+sc.nodesOff, pct=tot>0?Math.round(sc.nodesOn/tot*100):0;
+  const pct=energizedPct(sc);
   const pe=document.getElementById("h-pct");
   pe.textContent=pct+"%"; pe.className="stat-value "+(pct>=95?"good":pct>=80?"warn":"bad");
   document.getElementById("h-sw").textContent=`${sc.switchOpen}/${sc.switchTotal}`;
   const ce=document.getElementById("h-cb");
   ce.textContent=`${sc.cbOpen}/${sc.cbTotal}`; ce.className="stat-value "+(sc.cbOpen>0?"warn":"good");
   const fe=document.getElementById("h-ff");
-  fe.textContent=sc.faultFeeder||"none"; fe.className="stat-value "+(sc.faultActive?"bad":"mute");
+  fe.textContent=formatFaultFeeders(sc.faultFeeders, sc.faultFeeder); fe.className="stat-value "+(sc.faultActive?"bad":"mute");
   document.getElementById("btn-clear").disabled=!sc.faultActive;
   document.getElementById("btn-plan").disabled=!sc.faultActive;
+  document.getElementById("btn-clear-maint").disabled=!sc.maintActive;
+  document.getElementById("btn-clear-maint").style.display=sc.maintActive?"inline-block":"none";
+  document.getElementById("btn-maint-plan").disabled=!sc.maintActive;
+  document.getElementById("btn-maint-plan").style.display=sc.maintActive?"inline-block":"none";
 }
 
 const LEG_IDS={switches:"swi",dropouts:"do",reclosers:"rec",transformers:"xfm",substations:"sub",outage:"out"};
@@ -673,29 +914,57 @@ function renderFeeders(){
   document.getElementById("fd-list").innerHTML=rows.join("");
 }
 
+function feederColor(id){
+  return D.feeders.find(x=>x.id===id)?.color||"#00e5ff";
+}
+function supplyFeederChips(feeders, label){
+  if(!feeders||!feeders.length) return "";
+  return `<div class="st-card good-b">
+    <div class="st-title">${label}</div>
+    <div style="font-size:10px;color:#768390;margin-bottom:6px">สีสายบนแผนที่ตรงกับฟีดเดอร์เหล่านี้ — ตรวจสอบก่อนคืนระบบเดิม</div>
+    <div class="chips">${feeders.map(f=>{
+      const c=feederColor(f);
+      return `<span class="chip" style="border-color:${c};color:${c}">${f}</span>`;
+    }).join("")}</div></div>`;
+}
+
 function renderStatus(){
   const sc=D.scada; if(!sc) return;
-  const tot=sc.nodesOn+sc.nodesOff, pct=tot>0?Math.round(sc.nodesOn/tot*100):0;
-  const cbsOpen=D.substations.filter(s=>s.properties.status===0);
+  const pct=energizedPct(sc);
+  const showCust=sc.customersTotal>0&&(sc.faultActive||sc.maintActive);
   document.getElementById("st-list").innerHTML=[
     `<div class="st-card">
       <div class="st-title">⚡ Network Energization</div>
-      ${sc.lineDisplayFull
-        ?`<div style="font-size:10px;color:#768390;margin-bottom:6px">แสดงสายเต็มระบบ · สวิตช์ตาม PRESENTPOS · หลังวางฟอลต์จะสะท้อนสถานะจริง</div>`
-        :`<div style="font-size:10px;color:#d29922;margin-bottom:6px">สะท้อนสวิตช์/CB จริงหลังเกิดเหตุฟอลต์</div>`}
+      <div style="font-size:10px;color:#768390;margin-bottom:6px">${sc.lineDisplayPhysical
+        ?"⚡ โหมด real-time — สีสาย=ฟีดเดอร์ต้นทางจ่ายจริง · สายที่มีไฟแต่ไม่มีสวิทช์/RC เปิดกั้นแสดงสถานะเดียวกัน · โพลีก้อนเฉพาะจุดที่ยังดับ"
+        :sc.lineDisplayIsolation
+        ?"🔧 แยกวงจรแล้ว — โพลีก้อนยังเท่าเดิม · Energized ยังไม่รวมส่วนที่จ่ายย้อนกลับ"
+        :sc.faultActive
+        ?"โซนฟอลต์ตามทิศทาง load → tie · ทำตามแผนสวิทชิ่งแล้วจะอัปเดตเมื่อจ่ายย้อนกลับ"
+        :sc.maintActive
+        ?"โซนบำรุงรักษา active · สายในโซนงานแสดงเป็นดับ"
+        :"แสดงสายเต็มระบบ 100% · สวิตช์ตาม PRESENTPOS เริ่มต้น"}</div>
       <div class="st-nums">
         <div class="st-num"><div class="st-val good">${sc.nodesOn.toLocaleString()}</div><div class="st-lbl">Nodes on</div></div>
         <div class="st-num"><div class="st-val bad">${sc.nodesOff.toLocaleString()}</div><div class="st-lbl">Nodes off</div></div>
         <div class="st-num"><div class="st-val">${pct}%</div><div class="st-lbl">Energized</div></div>
-      </div></div>`,
+      </div>
+      ${showCust?`<div class="st-nums" style="margin-top:8px;border-top:1px solid #2a3140;padding-top:8px">
+        <div class="st-num"><div class="st-val good">${sc.customersOn.toLocaleString()}</div><div class="st-lbl">Users on (GIS)</div></div>
+        <div class="st-num"><div class="st-val bad">${sc.customersOff.toLocaleString()}</div><div class="st-lbl">Users off</div></div>
+        <div class="st-num"><div class="st-val">${sc.customersTotal.toLocaleString()}</div><div class="st-lbl">Users total</div></div>
+      </div>`:""}</div>`,
+    sc.lineDisplayPhysical && (sc.activeSupplyFeeders||[]).length
+      ? supplyFeederChips(sc.activeSupplyFeeders,"⚡ ฟีดเดอร์ต้นทางจ่ายไฟ (ปัจจุบัน)")
+      :"",
     `<div class="st-card${sc.cbOpen>0?" warn-b":""}">
       <div class="st-title">🔌 Source CBs</div>
       <div class="st-nums">
-        <div class="st-num"><div class="st-val warn">${sc.cbOpen}</div><div class="st-lbl">Open</div></div>
-        <div class="st-num"><div class="st-val good">${sc.cbTotal-sc.cbOpen}</div><div class="st-lbl">Closed</div></div>
-        <div class="st-num"><div class="st-val">${sc.cbTotal}</div><div class="st-lbl">Total</div></div>
+        <div class="st-num"><div class="st-val warn">${sc.cbOpen}</div><div class="st-lbl">Feeders open</div></div>
+        <div class="st-num"><div class="st-val good">${sc.cbTotal-sc.cbOpen}</div><div class="st-lbl">Feeders closed</div></div>
+        <div class="st-num"><div class="st-val">${sc.cbTotal}</div><div class="st-lbl">Active feeders</div></div>
       </div>
-      ${cbsOpen.length?`<div class="chips">${cbsOpen.map(s=>`<span class="chip chip-w">${s.properties.feeder}</span>`).join("")}</div>`:""}</div>`,
+      ${(sc.feedersSourceOpen||[]).length?`<div class="chips">${sc.feedersSourceOpen.map(f=>`<span class="chip chip-w">${f}</span>`).join("")}</div>`:""}</div>`,
     `<div class="st-card">
       <div class="st-title">⏻ Tie Switches</div>
       <div class="st-nums">
@@ -706,7 +975,7 @@ function renderStatus(){
     `<div class="st-card${sc.faultActive?" bad-b":""}">
       <div class="st-title">⚠ Active Fault</div>
       ${sc.faultActive
-        ?`<div>Feeder: <b style="color:#f85149">${sc.faultFeeder||"?"}</b>
+        ?`<div>Feeder: <b style="color:#f85149">${formatFaultFeeders(sc.faultFeeders, sc.faultFeeder)}</b>
            ${D.fault.lat?`<div style="font-size:10px;color:#768390;font-family:monospace;margin-top:3px">${D.fault.lat?.toFixed(5)}, ${D.fault.lon?.toFixed(5)}</div>`:""}
            <div style="margin-top:6px">
              <button class="btn-plan btn-sm" onclick="openPlanModal()" style="width:100%">
@@ -714,6 +983,19 @@ function renderStatus(){
              </button>
            </div></div>`
         :`<div style="font-size:11px;color:#768390">ไม่มี fault · กด Place fault เพื่อจำลอง</div>`}
+    </div>`,
+    `<div class="st-card${sc.maintActive?" warn-b":""}">
+      <div class="st-title">🔧 บำรุงรักษาระบบจำหน่าย</div>
+      ${sc.maintActive
+        ?`<div>งาน: <b style="color:#d29922">${sc.maintJobNumber||"—"}</b> · ${sc.maintJobName||"—"}<br>
+           ฟีดเดอร์: <b>${sc.maintFeeder||"?"}</b>
+           <div style="font-size:10px;color:#768390;font-family:monospace;margin-top:3px">${sc.maintCoords||"—"}</div>
+           <div style="margin-top:6px">
+             <button class="btn-plan btn-sm" onclick="openMaintPlanModal()" style="width:100%">
+               ⚙ แผนสวิตช์งานบำรุงรักษา
+             </button>
+           </div></div>`
+        :`<div style="font-size:11px;color:#768390">กด 🔧 บำรุงรักษา เพื่อกำหนดโซนปฏิบัติงาน</div>`}
     </div>`,
     (sc.feedersAffected||[]).length?
       `<div class="st-card">
@@ -728,16 +1010,26 @@ function renderStatus(){
   ].join("");
 }
 
+async function refreshAfterSwitch(){
+  D.pendingRefresh=false;
+  D.mapBusy=false;
+  await refreshLive();
+}
+async function doToggleRc(id){
+  await fetch(`/reclosers/${encodeURIComponent(id)}/toggle`,{method:"POST"});
+  await refreshAfterSwitch();
+}
 async function doToggleSw(id){
   await fetch(`/switches/${encodeURIComponent(id)}/toggle`,{method:"POST"});
-  await refreshLive();
+  await refreshAfterSwitch();
 }
 async function doToggleCB(id){
   await fetch(`/substations/${encodeURIComponent(id)}/toggle`,{method:"POST"});
-  await refreshLive();
+  await refreshAfterSwitch();
 }
 
 function toggleArm(){
+  if(D.maintMode) toggleMaint();
   D.armMode=!D.armMode;
   document.getElementById("btn-arm").textContent=D.armMode?"❌ Cancel":"📍 Place fault";
   document.getElementById("btn-arm").className=D.armMode?"btn-danger btn-sm":"btn-out btn-sm";
@@ -746,41 +1038,68 @@ function toggleArm(){
   document.getElementById("fault-form").style.display=D.armMode?"block":"none";
 }
 
-function handleFaultClick(e){
-  if(!D.armMode) return;
-  const rect=e.currentTarget.getBoundingClientRect();
-  const latlng=map.containerPointToLatLng(L.point(e.clientX-rect.left,e.clientY-rect.top));
-  doSetFault(latlng.lat,latlng.lng);
+function toggleMaint(){
+  if(D.armMode) toggleArm();
+  D.maintMode=!D.maintMode;
+  document.getElementById("btn-maint").textContent=D.maintMode?"❌ ปิด":"🔧 บำรุงรักษา";
+  document.getElementById("btn-maint").className=D.maintMode?"btn-danger btn-sm":"btn-out btn-sm";
+  document.getElementById("maint-banner").style.display=D.maintMode?"block":"none";
+  document.getElementById("maint-form").style.display=D.maintMode?"block":"none";
 }
 
-async function doSetFault(lat,lon){
-  const cause=document.getElementById("ff-cause").value;
-  const phase=document.getElementById("ff-phase").value;
-  const f=await post("/fault",{lat,lon,cause,phase});
-  if(!f.active){
-    alert(f.error||"ไม่พบโหนดเครือข่ายใกล้พิกัดนี้ — ลองเลื่อนพิกัดให้ใกล้สายจำหน่าย");
+function fillMaintStartFromMap(){
+  const c=map.getCenter();
+  document.getElementById("mf-start-lat").value=c.lat.toFixed(6);
+  document.getElementById("mf-start-lon").value=c.lng.toFixed(6);
+}
+
+function fillMaintEndFromMap(){
+  const c=map.getCenter();
+  document.getElementById("mf-end-lat").value=c.lat.toFixed(6);
+  document.getElementById("mf-end-lon").value=c.lng.toFixed(6);
+}
+
+async function setMaintenanceFromCoords(){
+  const start=parseCoordPair(document.getElementById("mf-start-lat").value,
+                             document.getElementById("mf-start-lon").value);
+  const end=parseCoordPair(document.getElementById("mf-end-lat").value,
+                           document.getElementById("mf-end-lon").value);
+  if(!start||!end){ alert("กรุณากรอกพิกัดเริ่มต้นและสิ้นสุดให้ครบ (WGS84)"); return; }
+  const jobName=document.getElementById("mf-job-name").value.trim();
+  const jobNumber=document.getElementById("mf-job-no").value.trim();
+  const r=await post("/maintenance",{
+    startLat:start.lat,startLon:start.lon,
+    endLat:end.lat,endLon:end.lon,
+    jobName,jobNumber,
+  });
+  if(!r.active){
+    alert(r.error||"กำหนดโซนงานไม่สำเร็จ");
     return;
   }
-  D.fault={active:f.active,feeder:f.feeder,lat:f.lat,lon:f.lon,cause,phase};
-  document.getElementById("ff-lat").value=f.lat?.toFixed(6)||"";
-  document.getElementById("ff-lon").value=f.lon?.toFixed(6)||"";
-  if(D.armMode) toggleArm();
-  drawFault();
+  D.maint={active:true,feeder:r.feeder,
+    startLat:r.startLat,startLon:r.startLon,
+    endLat:r.endLat,endLon:r.endLon,
+    jobName:r.jobName,jobNumber:r.jobNumber};
+  if(D.maintMode) toggleMaint();
+  drawMaintenance();
+  const bounds=L.latLngBounds([[start.lat,start.lon],[end.lat,end.lon]]);
+  map.fitBounds(bounds,{padding:[60,60],maxZoom:16});
   await refreshLive();
 }
 
-async function clearFault(){
-  await fetch("/fault",{method:"DELETE"});
-  D.fault={active:false,feeder:null,lat:null,lon:null};
+async function clearMaintenance(){
+  await fetch("/maintenance",{method:"DELETE"});
+  D.maint={active:false,feeder:null,startLat:null,startLon:null,endLat:null,endLon:null,jobName:null,jobNumber:null};
   D.outagePoly={type:"FeatureCollection",features:[]};
-  D.plan=null; D.planDone=0;
-  drawFault(); drawOutage(); await refreshLive();
+  D.plan=null; D.planDone=0; D.planNormDone=0;
+  document.getElementById("plan-norm-steps").innerHTML="";
+  document.getElementById("btn-exec-norm").style.display="none";
+  drawMaintenance(); drawOutage(); await refreshLive();
 }
 
-async function openPlanModal(){
-  document.getElementById("plan-backdrop").classList.add("open");
-  document.getElementById("plan-panel").classList.add("open");
-  document.getElementById("plan-summary").innerHTML="⏳ กำลังวิเคราะห์ switching plan…";
+async function openMaintPlanModal(){
+  setPlanPanelOpen(true);
+  document.getElementById("plan-summary").innerHTML="⏳ กำลังวิเคราะห์แผนสวิตช์งานบำรุงรักษา…";
   document.getElementById("plan-next-hint").style.display="none";
   document.getElementById("plan-meta").innerHTML="";
   document.getElementById("plan-steps").innerHTML="";
@@ -788,7 +1107,7 @@ async function openPlanModal(){
   document.getElementById("prog-fill").style.width="0%";
   document.getElementById("btn-exec-all").disabled=true;
   let plan;
-  try{ plan=await post("/switching-plan"); }
+  try{ plan=await post("/maintenance/switching-plan"); }
   catch(err){
     document.getElementById("plan-summary").innerHTML=`<span style="color:#f85149">❌ เกิดข้อผิดพลาด: ${err}</span>`;
     return;
@@ -800,9 +1119,97 @@ async function openPlanModal(){
   D.plan=plan; D.planDone=0;
   renderPlan();
 }
+
+function handleFaultClick(e){
+  if(!D.armMode) return;
+  const rect=e.currentTarget.getBoundingClientRect();
+  const latlng=map.containerPointToLatLng(L.point(e.clientX-rect.left,e.clientY-rect.top));
+  document.getElementById("ff-lat").value=latlng.lat.toFixed(6);
+  document.getElementById("ff-lon").value=latlng.lng.toFixed(6);
+  refreshNearbyFeeders(latlng.lat, latlng.lng, D.faultMapClickSnapM);
+}
+
+async function doSetFault(lat,lon,mapClick=false){
+  const cause=document.getElementById("ff-cause").value;
+  const phase=document.getElementById("ff-phase").value;
+  const feeders=selectedFaultFeeders();
+  if(!feeders.length){
+    alert("กรุณาเลือกฟีดเดอร์อย่างน้อย 1 รายการก่อนตั้งฟอลต์");
+    return;
+  }
+  const body={lat,lon,cause,phase,feeders,feeder:feeders[0]};
+  if(mapClick) body.mapClick=true;
+  const f=await post("/fault", body);
+  if(!f.active){
+    alert(f.error||"ไม่พบสายไฟฟ้าใกล้พิกัดนี้ — ลองคลิกบนสายบนแผนที่หรือปรับพิกัดให้ใกล้ขึ้น");
+    return;
+  }
+  D.fault={active:f.active,feeder:f.feeder,feeders:f.feeders||[f.feeder],lat:f.lat,lon:f.lon,cause,phase};
+  document.getElementById("ff-lat").value=f.lat?.toFixed(6)||"";
+  document.getElementById("ff-lon").value=f.lon?.toFixed(6)||"";
+  D.pendingRefresh=false;
+  D.mapBusy=false;
+  if(D.armMode) toggleArm();
+  drawFault();
+  await refreshLive({force:true});
+}
+
+async function clearFault(){
+  await fetch("/fault",{method:"DELETE"});
+  D.fault={active:false,feeder:null,feeders:[],lat:null,lon:null};
+  D.outagePoly={type:"FeatureCollection",features:[]};
+  D.plan=null; D.planDone=0; D.planNormDone=0;
+  document.getElementById("plan-norm-steps").innerHTML="";
+  document.getElementById("btn-exec-norm").style.display="none";
+  drawFault(); drawOutage(); await refreshLive();
+}
+
+async function openPlanModal(){
+  setPlanPanelOpen(true);
+  document.getElementById("plan-summary").innerHTML="⏳ กำลังวิเคราะห์ switching plan…";
+  document.getElementById("plan-next-hint").style.display="none";
+  document.getElementById("plan-meta").innerHTML="";
+  document.getElementById("plan-steps").innerHTML="";
+  document.getElementById("plan-norm-steps").innerHTML=
+    '<div class="plan-section-label" style="color:#768390">รอสักครู่…</div>';
+  document.getElementById("plan-progress").textContent="—";
+  document.getElementById("prog-fill").style.width="0%";
+  document.getElementById("btn-exec-all").disabled=true;
+  document.getElementById("btn-exec-norm").style.display="none";
+  let plan;
+  try{ plan=await post("/switching-plan"); }
+  catch(err){
+    document.getElementById("plan-summary").innerHTML=`<span style="color:#f85149">❌ เกิดข้อผิดพลาด: ${err}</span>`;
+    document.getElementById("plan-norm-steps").innerHTML="";
+    return;
+  }
+  if(plan.error){
+    document.getElementById("plan-summary").innerHTML=`<span style="color:#f85149">❌ ${plan.error}</span>`;
+    document.getElementById("plan-norm-steps").innerHTML="";
+    return;
+  }
+  D.plan=plan; D.planDone=0; D.planNormDone=0;
+  renderPlan();
+}
+function setPlanPanelOpen(open){
+  const panel=document.getElementById("plan-panel");
+  const wrap=document.getElementById("map-wrap");
+  if(open){
+    const hdr=document.querySelector("header");
+    const top=hdr?hdr.offsetHeight:53;
+    panel.style.top=top+"px";
+    panel.style.height=`calc(100vh - ${top}px)`;
+    panel.classList.add("open");
+    wrap.classList.add("plan-docked");
+  }else{
+    panel.classList.remove("open");
+    wrap.classList.remove("plan-docked");
+  }
+  setTimeout(()=>map.invalidateSize(),180);
+}
+
 function closePlanModal(){
-  document.getElementById("plan-backdrop").classList.remove("open");
-  document.getElementById("plan-panel").classList.remove("open");
+  setPlanPanelOpen(false);
 }
 
 function renderPlan(){
@@ -819,7 +1226,16 @@ function renderPlan(){
   }else{
     nextEl.style.display="none";
   }
-  const chips=[
+  const chips=p.planType==="maintenance"?[
+    {label:"งาน",val:p.jobNumber||"—",col:"#d29922"},
+    {label:"ชื่องาน",val:p.jobName||"—",col:"#d29922"},
+    {label:"ฟีดเดอร์",val:p.faultFeeder||"?",col:"#a78bfa"},
+    {label:"โซน",val:p.maintCoords||p.faultCoords||"—",col:"#00e5ff"},
+    {label:"ดับ",val:`${(p.deenergizedNodes||0).toLocaleString()} nodes`,col:"#f85149"},
+    {label:"คืนไฟได้",val:`${(p.totalRestorable||0).toLocaleString()} nodes`,col:"#3fb950"},
+    {label:"แยกโซน",val:`${isoSteps} ขั้น`,col:"#f97316"},
+    {label:"คืนระบบ",val:`${resSteps} ขั้น`,col:"#3fb950"},
+  ]:[
     {label:"ฟีดเดอร์",val:p.faultFeeder||"?",col:"#a78bfa"},
     {label:"พิกัด",val:p.faultCoords||(p.faultLat!=null?`${p.faultLat.toFixed(6)}, ${p.faultLon.toFixed(6)}`:"—"),col:"#00e5ff"},
     {label:"สาเหตุ",val:p.faultCause||"—",col:"#d29922"},
@@ -827,15 +1243,25 @@ function renderPlan(){
     {label:"ดับ",val:`${(p.deenergizedNodes||0).toLocaleString()} nodes`,col:"#f85149"},
     {label:"คืนไฟได้",val:`${(p.totalRestorable||0).toLocaleString()} nodes`,col:"#3fb950"},
     {label:"แยกฟอลต์",val:`${isoSteps} ขั้น`,col:"#f97316"},
-    {label:"คืนระบบ",val:`${resSteps} ขั้น`,col:"#3fb950"},
+    {label:"คืนไฟ",val:`${resSteps} ขั้น`,col:"#3fb950"},
+    ...(p.normalizationCount?[{label:"คืนระบบเดิม",val:`${p.normalizationCount} ขั้น`,col:"#22d3ee"}]:[]),
+    ...(p.kuaLineEndSource?[{label:"KUA",val:"กระแสจากปลายสาย",col:"#22d3ee"}]:[]),
   ];
   document.getElementById("plan-meta").innerHTML=chips.map(c=>
     `<span class="meta-chip" style="border-color:${c.col}44;color:${c.col}">
       <span style="color:#768390;font-size:9px">${c.label}: </span>${c.val}
     </span>`).join("");
   renderPlanSteps();
+  renderNormSteps();
   document.getElementById("btn-exec-all").disabled=(p.steps.length===0||D.planDone>=p.steps.length);
-  document.getElementById("btn-copy-plan").disabled=!p.steps.length;
+  const normBtn=document.getElementById("btn-exec-norm");
+  if(p.normalizationSteps&&p.normalizationSteps.length){
+    normBtn.style.display="inline-block";
+    normBtn.disabled=(D.planNormDone>=p.normalizationSteps.length);
+  }else{
+    normBtn.style.display="none";
+  }
+  document.getElementById("btn-copy-plan").disabled=!p.steps.length&&!p.normalizationSteps?.length;
   updatePlanProgress();
 }
 
@@ -851,10 +1277,17 @@ function buildPlanDispatchText(){
   for(const step of p.steps){
     if(step.section && step.section!==lastSection){
       lastSection=step.section;
-      lines.push(lastSection==="isolation"?"--- แยกจุดฟอลต์ ---":"--- คืนระบบ ---");
+      lines.push(lastSection==="isolation"?"--- แยกจุดฟอลต์ ---":"--- คืนไฟ ---");
     }
     const mark=step.step<=D.planDone?"[x]":"[ ]";
     lines.push(`${mark} ${step.step}. ${step.instructionTh||step.reason}`);
+  }
+  if(p.normalizationSteps&&p.normalizationSteps.length){
+    lines.push("","--- คืนระบบเดิมหลังซ่อม ---");
+    for(const step of p.normalizationSteps){
+      const mark=step.step<=D.planNormDone?"[x]":"[ ]";
+      lines.push(`${mark} ${step.step}. ${step.instructionTh||step.reason}`);
+    }
   }
   return lines.join("\n");
 }
@@ -872,12 +1305,14 @@ async function copyPlanDispatch(){
 }
 
 function focusSwitchOnMap(switchId){
-  const f=D.switches.find(s=>s.properties.id===switchId);
+  let f=D.switches.find(s=>s.properties.id===switchId);
+  if(!f) f=D.reclosers.find(r=>r.properties.id===switchId);
   if(!f) return;
   const [lo,la]=f.geometry.coordinates;
   D.selectedSwitch=switchId;
   map.setView([la,lo],Math.max(map.getZoom(),16),{animate:true});
   renderSwitches();
+  drawReclosers();
 }
 
 function renderPlanSteps(){
@@ -895,6 +1330,7 @@ function renderPlanSteps(){
       html+=`<div class="plan-section-label">${lbl}</div>`;
     }
     const done=i<D.planDone, active=i===D.planDone, isOpen=step.action==="OPEN";
+    const isNote=step.action==="NOTE";
     const btnLabel=isOpen?"เปิดสวิตช์":"ปิดสวิตช์";
     html+=`<div class="plan-step${done?" done":active?" active-step":""}" id="plan-step-${i}">
       <div class="step-num" style="border-color:${done?"#238636":active?"#a78bfa":"#30363d"};
@@ -903,24 +1339,66 @@ function renderPlanSteps(){
         ${done?"✓":step.step}
       </div>
       <div class="step-body">
-        <div><span class="step-action action-${step.action}">${step.action}</span>
-             <span class="step-sw">${step.switchId}</span></div>
+        ${isNote?"":`<div><span class="step-action action-${step.action}">${step.action}</span>
+             <span class="step-sw">${step.switchId}</span>
+             ${step.deviceType==="recloser"?'<span style="color:#ffd600;font-size:10px"> · RC</span>':""}</div>`}
         <div class="step-instruction">${step.instructionTh||step.reason}</div>
-        <div class="step-feeder">ฟีดเดอร์ ${step.feeder}${step.location?" · "+step.location:""}</div>
+        ${isNote?"":`<div class="step-feeder">ฟีดเดอร์ ${step.feeder}${step.location?" · "+step.location:""}</div>`}
         <div class="step-reason">${step.reason}</div>
         ${step.nodesRestored>0
           ?`<div class="step-restore">+${step.nodesRestored.toLocaleString()} nodes คืนไฟ</div>`:""}
       </div>
       <div class="step-actions">
-        <button type="button" class="btn-map" onclick="focusSwitchOnMap('${step.switchId}')">📍 แผนที่</button>
+        ${isNote?(done?`<span style="color:#3fb950;font-size:12px">✓ ยืนยันแล้ว</span>`
+          :`<button class="btn-sm btn-plan" onclick="executeStep(${i})" ${i!==D.planDone?"disabled":""}>✓ ยืนยันปลายสาย</button>`)
+          :`<button type="button" class="btn-map" onclick="focusSwitchOnMap('${step.switchId}')">📍 แผนที่</button>
         ${done?`<span style="color:#3fb950;font-size:12px">✓ เสร็จแล้ว</span>`
               :`<button class="btn-sm ${isOpen?"btn-danger":"btn-success"}"
                   onclick="executeStep(${i})" ${i!==D.planDone?"disabled":""}>
-                  ▶ ${btnLabel}</button>`}
+                  ▶ ${btnLabel}</button>`}`}
       </div>
     </div>`;
   });
   document.getElementById("plan-steps").innerHTML=html;
+}
+
+function renderNormSteps(){
+  const p=D.plan;
+  const el=document.getElementById("plan-norm-steps");
+  if(!p||!p.normalizationSteps||!p.normalizationSteps.length){
+    if(el) el.innerHTML=""; return;
+  }
+  let html=`<div class="plan-section-label" style="color:#22d3ee;border-top:1px solid #30363d;padding-top:10px;margin-top:4px">③ คืนระบบเดิมหลังซ่อม (${p.normalizationSteps.length} ขั้น)</div>`;
+  p.normalizationSteps.forEach((step,i)=>{
+    const done=i<D.planNormDone, active=i===D.planNormDone;
+    const isNote=step.action==="NOTE";
+    const isOpen=step.action==="OPEN";
+    html+=`<div class="plan-step${done?" done":active?" active-step":""}" id="plan-norm-step-${i}">
+      <div class="step-num" style="border-color:${done?"#238636":active?"#22d3ee":"#30363d"};
+           background:${done?"rgba(35,134,54,.15)":active?"rgba(34,211,238,.12)":"transparent"};
+           color:${done?"#3fb950":active?"#22d3ee":"#768390"}">
+        ${done?"✓":step.step}
+      </div>
+      <div class="step-body">
+        ${isNote?"":`<div><span class="step-action action-${step.action}">${step.action}</span>
+             <span class="step-sw">${step.switchId}</span>
+             ${step.deviceType==="recloser"?'<span style="color:#ffd600;font-size:10px"> · RC</span>':""}</div>`}
+        <div class="step-instruction">${step.instructionTh||step.reason}</div>
+        ${isNote?"":`<div class="step-feeder">ฟีดเดอร์ ${step.feeder}${step.location?" · "+step.location:""}</div>`}
+        <div class="step-reason">${step.reason}</div>
+      </div>
+      <div class="step-actions">
+        ${isNote?(done?`<span style="color:#3fb950;font-size:12px">✓ ยืนยันแล้ว</span>`
+          :`<button class="btn-sm btn-plan" onclick="executeNormStep(${i})" ${i!==D.planNormDone?"disabled":""}>✓ ยืนยัน</button>`)
+          :`<button type="button" class="btn-map" onclick="focusSwitchOnMap('${step.switchId}')">📍 แผนที่</button>
+        ${done?`<span style="color:#3fb950;font-size:12px">✓ เสร็จแล้ว</span>`
+              :`<button class="btn-sm ${isOpen?"btn-danger":"btn-success"}"
+                  onclick="executeNormStep(${i})" ${i!==D.planNormDone?"disabled":""}>
+                  ▶ ${isOpen?"เปิด":"ปิด"}</button>`}`}
+      </div>
+    </div>`;
+  });
+  el.innerHTML=html;
 }
 
 function updatePlanProgress(){
@@ -937,8 +1415,14 @@ function updatePlanProgress(){
     nextEl.style.display="block";
     nextEl.innerHTML=`<b>ขั้นถัดไป:</b> ${next.instructionTh||next.reason}`;
   }else if(done>=total && total>0){
-    nextEl.style.display="block";
-    nextEl.innerHTML="<b>สถานะ:</b> แผนคืนระบบดำเนินการครบแล้ว";
+    const normTotal=p.normalizationSteps?.length||0;
+    if(normTotal && D.planNormDone<normTotal){
+      nextEl.style.display="block";
+      nextEl.innerHTML="<b>สถานะ:</b> แผนคืนไฟครบแล้ว — ดำเนินการคืนระบบเดิมหลังซ่อม";
+    }else{
+      nextEl.style.display="block";
+      nextEl.innerHTML="<b>สถานะ:</b> แผนดำเนินการครบแล้ว";
+    }
   }else{
     nextEl.style.display="none";
   }
@@ -946,17 +1430,54 @@ function updatePlanProgress(){
   document.getElementById("btn-exec-all").disabled=(done>=total);
 }
 
+function patchDeviceStatus(id, action){
+  const st=action==="CLOSE"?1:0, state=st?"CLOSE":"OPEN";
+  for(const f of D.switches){
+    if(f.properties.id===id){f.properties.status=st;f.properties.state=state;return;}
+  }
+  for(const f of D.reclosers){
+    if(f.properties.id===id){f.properties.status=st;f.properties.state=state;return;}
+  }
+}
+
 async function executeStep(i){
   const p=D.plan; if(!p||i!==D.planDone) return;
   const step=p.steps[i];
-  document.querySelectorAll("#plan-steps button").forEach(b=>b.disabled=true);
+  const hint=document.getElementById("plan-next-hint");
+  if(hint){hint.style.display="block";hint.textContent="⏳ กำลังอัปเดตแผนที่…";}
   try{
     await post(`/switching-plan/execute/${i+1}`,{action:step.action,switchId:step.switchId});
+    if(step.action!=="NOTE") patchDeviceStatus(step.switchId, step.action);
     D.planDone++; renderPlanSteps(); updatePlanProgress();
-    await refreshLive();
+    if(step.action!=="NOTE") await refreshLive();
     const next=document.getElementById(`plan-step-${D.planDone}`);
     if(next) next.scrollIntoView({behavior:"smooth",block:"nearest"});
   }catch(err){ alert("ดำเนินการไม่สำเร็จ: "+err); renderPlanSteps(); }
+  finally{ updatePlanProgress(); }
+}
+
+async function executeNormStep(i){
+  const p=D.plan; if(!p||!p.normalizationSteps||i!==D.planNormDone) return;
+  const step=p.normalizationSteps[i];
+  try{
+    await post(`/switching-plan/normalize/execute/${i+1}`,
+      {action:step.action,switchId:step.switchId});
+    if(step.action!=="NOTE") patchDeviceStatus(step.switchId, step.action);
+    D.planNormDone++; renderNormSteps();
+    const normBtn=document.getElementById("btn-exec-norm");
+    if(normBtn) normBtn.disabled=(D.planNormDone>=p.normalizationSteps.length);
+    if(step.action!=="NOTE") await refreshLive();
+    const next=document.getElementById(`plan-norm-step-${D.planNormDone}`);
+    if(next) next.scrollIntoView({behavior:"smooth",block:"nearest"});
+  }catch(err){ alert("ดำเนินการไม่สำเร็จ: "+err); renderNormSteps(); }
+}
+
+async function executeAllNorm(){
+  if(!D.plan||!D.plan.normalizationSteps) return;
+  while(D.planNormDone<D.plan.normalizationSteps.length){
+    await executeNormStep(D.planNormDone);
+    await new Promise(r=>setTimeout(r,600));
+  }
 }
 
 async function executeAll(){
@@ -965,10 +1486,36 @@ async function executeAll(){
     await executeStep(D.planDone);
     await new Promise(r=>setTimeout(r,600));
   }
+  if(D.plan.normalizationSteps?.length){
+    renderPlan();
+    const normEl=document.getElementById("plan-norm-steps");
+    if(normEl){
+      normEl.scrollIntoView({behavior:"smooth",block:"start"});
+    }
+  }
 }
 
-setInterval(refreshLive,5000);
-loadAll();
+let _refreshTimer=null;
+function scheduleRefreshLive(){
+  clearInterval(_refreshTimer);
+  const ms=(D.fault?.active||D.scada?.faultActive||D.scada?.maintActive)?12000:5000;
+  _refreshTimer=setInterval(refreshLive,ms);
+}
+
+function wireFaultFormNearFeeders(){
+  const onCoordInput=()=>{
+    const pair=parseCoordPair(
+      document.getElementById("ff-lat").value,
+      document.getElementById("ff-lon").value,
+    );
+    if(pair) scheduleNearbyFeeders(pair.lat, pair.lon);
+  };
+  document.getElementById("ff-lat")?.addEventListener("input", onCoordInput);
+  document.getElementById("ff-lon")?.addEventListener("input", onCoordInput);
+}
+
+wireFaultFormNearFeeders();
+loadAll().then(()=>scheduleRefreshLive());
 </script>
 </body>
 </html>

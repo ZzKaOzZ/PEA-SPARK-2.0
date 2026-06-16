@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="PEA SPARK">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="55%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="120" height="120" rx="22" fill="#0d1117"/>
+  <rect x="4" y="4" width="112" height="112" rx="20" fill="none" stroke="url(#g)" stroke-width="3"/>
+  <path d="M60 22 L78 62 L66 62 L72 92 L42 52 L54 52 Z" fill="url(#g)"/>
+  <text x="60" y="112" text-anchor="middle" fill="#c9d1d9" font-family="Segoe UI,system-ui,sans-serif" font-size="14" font-weight="700" letter-spacing="2">SPARK</text>
+</svg>
