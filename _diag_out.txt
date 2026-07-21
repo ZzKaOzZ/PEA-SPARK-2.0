@@ -1,0 +1,49 @@
+﻿α╕üα╕│α╕Ñα╕▒α╕çα╣éα╕½α╕Ñα╕öα╕éα╣ëα╕¡α╕íα╕╣α╕Ñα╣Çα╕äα╕úα╕╖α╕¡α╕éα╣êα╕▓α╕óΓÇª
+  CRS: EPSG:32647 ┬╖ node snap: 10^-1 m
+  KUA stub bridges: 1 virtual links (tie-feed CB gaps)
+  chain links   : 1,336 virtual links (in-segment keys)
+  lateral taps : 2,428 virtual links (recloser/dropout)
+  mesh colocate  : 2,271 virtual links (duplicate coords)
+  feeder stubs  : 1,047 virtual links (GIS tap gaps)
+  chain gaps    : 5,502 virtual links (segment endpoints)
+  GIS disabled (skipped): switches 21 ┬╖ reclosers 0
+  conductors : 6,549
+  nodes      : 29,474
+  tie switches: 126 ┬╖ grid interconnect: 5 ┬╖ RC bypass: 16 ┬╖ KUAΓåöPDA boundaries: 5 ┬╖ dropouts (F): 296 ┬╖ open: 20
+  substations: 25
+  CB skipped (off-map feeders): 39
+  CB-less feeders: 0
+  virtual CBs : 15
+
+=== after step 2 (before NOTE) ===
+rest False ack False PDA02 0 live 28065 disp 28070
+hops S13=556 S08=457 R01=435 | S13 live=False S08 live=False R01 live=False
+S13 supply None S08 supply None
+near S-13 segs: on=103 off=21 supply KUA01=0 PDA02=0
+near R-01 segs: on=204 off=125 supply PDA02=0 KUA01=0
+backfeed nodes 0 R01 in backfeed False
+
+=== after step 3 NOTE ack ===
+rest True ack True PDA02 0 live 2156 disp 2156
+hops S13=556 S08=457 R01=435 | S13 live=True S08 live=True R01 live=False
+S13 supply None S08 supply KUA01
+near S-13 segs: on=124 off=0 supply KUA01=21 PDA02=0
+near R-01 segs: on=328 off=1 supply PDA02=0 KUA01=124
+backfeed nodes 0 R01 in backfeed False
+python : Traceback (most recent call last):
+At C:\Users\Kao\AppData\Local\Temp\ps-script-efeb6da3-291b-4d6b-8e1d-41a8fd060f65.ps1:103 char:79
++ ... c:\Users\Kao\Desktop\PEA SPARK"; python _diag_steps34.py 2>&1 | Out-F ...
++                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\Kao\Desktop\PEA SPARK\_diag_steps34.py", line 131, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Kao\Desktop\PEA SPARK\_diag_steps34.py", line 124, in main
+    report("after step 3 NOTE ack", s, hop)
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Kao\Desktop\PEA SPARK\_diag_steps34.py", line 109, in report
+    assert s08 not in live, f"S-08 must be dark, got live with {len(wrong_sub)} subst nodes"
+           ^^^^^^^^^^^^^^^
+AssertionError: S-08 must be dark, got live with 0 subst nodes

@@ -48,6 +48,12 @@ button:disabled{opacity:.35;cursor:default}
 .logout-btn{background:#30363d;color:#c9d1d9;padding:4px 10px;font-size:11px;border:none;border-radius:5px}
 
 #fault-banner{display:none;position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:2000;background:#da3633;color:#fff;padding:6px 14px;border-radius:5px;font-size:12px;font-weight:600;pointer-events:none;animation:blink 1s infinite alternate}
+#map-processing{display:none;position:absolute;top:52px;left:50%;transform:translateX(-50%);z-index:2100;background:rgba(22,27,34,.94);border:1px solid #30363d;border-radius:8px;padding:10px 18px;min-width:240px;text-align:center;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.35)}
+#map-processing.visible{display:block}
+.map-processing-bar{height:4px;background:#21262d;border-radius:2px;overflow:hidden;margin-bottom:7px}
+.map-processing-fill{height:100%;width:35%;background:var(--warn);border-radius:2px;animation:proc-indet 1.1s ease-in-out infinite}
+@keyframes proc-indet{0%{transform:translateX(-120%)}100%{transform:translateX(380%)}}
+#map-processing-text{font-size:12px;color:var(--muted);font-weight:500}
 @keyframes blink{from{opacity:.8}to{opacity:1}}
 #fault-overlay{display:none;position:absolute;inset:0;z-index:1900;cursor:crosshair;border:3px solid #da3633;animation:blink 1s infinite alternate}
 .leaflet-tile-pane{filter:brightness(.40) saturate(.35) contrast(.70)}
@@ -246,6 +252,10 @@ button:disabled{opacity:.35;cursor:default}
       <div id="map"></div>
       <div id="fault-overlay" onclick="handleFaultClick(event)"></div>
       <div id="fault-banner">⚠ กรอก/คลิกพิกัด → เลือกฟีดเดอร์จากรายการ → กด 「ตั้งจากพิกัด」 · สาเหตุ/เฟส</div>
+      <div id="map-processing" aria-live="polite">
+        <div class="map-processing-bar"><div class="map-processing-fill"></div></div>
+        <span id="map-processing-text">กำลังประมวลผล…</span>
+      </div>
       <div id="fault-form">
         <label>สาเหตุ (Cause)</label>
         <select id="ff-cause"></select>
@@ -374,6 +384,8 @@ const D = {
   plan:null, planDone:0, planNormDone:0,
   mapBusy:false,           // R3: true while zooming/panning
   pendingRefresh:false,    // R3: coalesce refreshes during interaction
+  refreshBusy:false,       // R51: block overlapping live-refresh storms
+  mapGen:0,                // R74: drop stale /live-refresh that loses to execute
 };
 
 const map = L.map("map",{zoomControl:true,preferCanvas:true}).setView([11.81,99.79],12);
@@ -387,20 +399,49 @@ map.on("zoomend moveend",()=>{
   if(D.pendingRefresh){D.pendingRefresh=false;refreshLive();}
 });
 
+// Dedicated panes — outage under conductors without scanning 6k polylines (R76).
+map.createPane("outagePane");
+map.getPane("outagePane").style.zIndex = 350;
+map.createPane("networkPane");
+map.getPane("networkPane").style.zIndex = 440;
+map.createPane("devicePane");
+map.getPane("devicePane").style.zIndex = 460;
+map.createPane("faultPane");
+map.getPane("faultPane").style.zIndex = 500;
+
 const lyr = {
-  conductors:  L.layerGroup().addTo(map),
-  switches:    L.layerGroup().addTo(map),
-  dropouts:    L.layerGroup(),
-  reclosers:   L.layerGroup().addTo(map),
-  transformers:L.layerGroup(),
-  substations: L.layerGroup().addTo(map),
-  outage:      L.layerGroup().addTo(map),
-  fault:       L.layerGroup().addTo(map),
-  maint:       L.layerGroup().addTo(map),
+  outage:      L.layerGroup([], {pane: "outagePane"}).addTo(map),
+  conductors:  L.layerGroup([], {pane: "networkPane"}).addTo(map),
+  switches:    L.layerGroup([], {pane: "devicePane"}).addTo(map),
+  dropouts:    L.layerGroup([], {pane: "devicePane"}),
+  reclosers:   L.layerGroup([], {pane: "devicePane"}).addTo(map),
+  transformers:L.layerGroup([], {pane: "devicePane"}),
+  substations: L.layerGroup([], {pane: "devicePane"}).addTo(map),
+  fault:       L.layerGroup([], {pane: "faultPane"}).addTo(map),
+  maint:       L.layerGroup([], {pane: "faultPane"}).addTo(map),
 };
 
-const j = url => fetch(url).then(r=>r.json());
-const post = (url,body={}) => fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json());
+const j = url => fetch(url).then(async r=>{
+  if(!r.ok) throw new Error(`${url} HTTP ${r.status}`);
+  return r.json();
+});
+const post = (url,body={}) => fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(async r=>{
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error||`${url} HTTP ${r.status}`);
+  return data;
+});
+
+function setMapProcessing(on,msg){
+  const el=document.getElementById("map-processing");
+  const txt=document.getElementById("map-processing-text");
+  if(!el) return;
+  if(on){
+    el.classList.add("visible");
+    if(msg&&txt) txt.textContent=msg;
+  }else{
+    el.classList.remove("visible");
+  }
+}
 
 function fillCauseOptions(causes){
   const sel=document.getElementById("ff-cause");
@@ -409,81 +450,136 @@ function fillCauseOptions(causes){
 }
 
 async function loadAll(){
-  const [co,sw,rc,xf,sub,fd,sc,op,fc,nc] = await Promise.all([
-    j("/conductor"),j("/switches"),j("/reclosers"),
-    j("/transformers"),j("/substations"),j("/feeders"),j("/scada"),j("/outage-polygon"),
-    j("/api/fault-causes"),j("/api/network-config"),
-  ]);
-  fillCauseOptions(fc.causes);
-  if(nc?.faultMapClickSnapM) D.faultMapClickSnapM=nc.faultMapClickSnapM;
-  if(nc?.faultCoordSnapM) D.faultCoordSnapM=nc.faultCoordSnapM;
-  D.conductors=co.features; D.switches=sw.features; D.reclosers=rc.features;
-  D.transformers=xf.features; D.substations=sub.features;
-  D.feeders=fd.feeders; D.scada=sc; D.outagePoly=op;
-  // R5: hydrate fault.lat/lon from /scada
-  if(sc.faultActive){
-    D.fault={active:true,feeder:sc.faultFeeder,feeders:sc.faultFeeders||[sc.faultFeeder].filter(Boolean),
-             lat:sc.faultLat??null,lon:sc.faultLon??null};
+  const banner=document.getElementById("fault-banner");
+  if(banner){banner.style.display="block";banner.textContent="⏳ กำลังโหลดเครือข่าย… (ครั้งแรกอาจใช้เวลา 1–2 นาที)";}
+  setMapProcessing(true,"กำลังโหลดเครือข่าย…");
+  try{
+    const [bundle,xf,fd,fc,nc] = await Promise.all([
+      j("/live-refresh"),j("/transformers"),j("/feeders"),
+      j("/api/fault-causes"),j("/api/network-config"),
+    ]);
+    fillCauseOptions(fc.causes);
+    if(nc?.faultMapClickSnapM) D.faultMapClickSnapM=nc.faultMapClickSnapM;
+    if(nc?.faultCoordSnapM) D.faultCoordSnapM=nc.faultCoordSnapM;
+    applyLiveBundle(bundle);
+    D.transformers=xf.features;
+    D.feeders=fd.feeders;
+    const sc=bundle.scada;
+    if(sc.faultActive){
+      D.fault={active:true,feeder:sc.faultFeeder,feeders:sc.faultFeeders||[sc.faultFeeder].filter(Boolean),
+               lat:sc.faultLat??null,lon:sc.faultLon??null};
+    }
+    if(sc.maintActive){
+      D.maint={active:true,feeder:sc.maintFeeder,
+        startLat:sc.maintStartLat,startLon:sc.maintStartLon,
+        endLat:sc.maintEndLat,endLon:sc.maintEndLon,
+        jobName:sc.maintJobName,jobNumber:sc.maintJobNumber};
+    }
+    renderFeeders();
+    renderAll(); fitBounds(); drawFault(); drawMaintenance();
+    if(banner&&!D.fault.active&&!D.maint.active) banner.style.display="none";
+  }catch(err){
+    console.error("loadAll failed:",err);
+    if(banner){
+      banner.style.display="block";
+      banner.textContent="❌ โหลดข้อมูลไม่สำเร็จ — รีสตาร์ท python app.py แล้วกด Ctrl+F5";
+    }
+  }finally{
+    setMapProcessing(false);
   }
-  if(sc.maintActive){
-    D.maint={active:true,feeder:sc.maintFeeder,
-      startLat:sc.maintStartLat,startLon:sc.maintStartLon,
-      endLat:sc.maintEndLat,endLon:sc.maintEndLon,
-      jobName:sc.maintJobName,jobNumber:sc.maintJobNumber};
-  }
-  renderAll(); fitBounds(); drawFault(); drawMaintenance();
 }
 
-async function refreshLive(opts={}){
-  const force=opts.force===true;
-  if(!force&&D.mapBusy){D.pendingRefresh=true;return;}     // R3
-  const [co,sw,sub,sc,op,rc] = await Promise.all([
-    j("/conductor"),j("/switches"),j("/substations"),j("/scada"),j("/outage-polygon"),
-    j("/reclosers"),
-  ]);
-  D.conductors=co.features; D.switches=sw.features; D.substations=sub.features;
-  D.reclosers=rc.features;
-  D.scada=sc; D.outagePoly=op;
+function applyLiveBundle(bundle){
+  applyLivePayload({
+    conductors:bundle.conductors,
+    switches:bundle.switches,
+    reclosers:bundle.reclosers,
+    substations:bundle.substations,
+    scada:bundle.scada,
+    outagePoly:bundle.outagePoly,
+  });
+}
+
+function applyLivePayload(sc){
+  if(!sc?.scada) return;
+  if(sc.conductors?.features) D.conductors=sc.conductors.features;
+  if(sc.switches?.features) D.switches=sc.switches.features;
+  if(sc.reclosers?.features) D.reclosers=sc.reclosers.features;
+  if(sc.substations?.features) D.substations=sc.substations.features;
+  D.scada=sc.scada;
+  if(sc.outagePoly) D.outagePoly=sc.outagePoly;
   // R5: keep fault marker coords in sync with server
-  if(sc.faultActive && (D.fault.lat==null||D.fault.lon==null)){
-    D.fault={active:true,feeder:sc.faultFeeder,feeders:sc.faultFeeders||[sc.faultFeeder].filter(Boolean),
-      lat:sc.faultLat,lon:sc.faultLon};
+  if(sc.scada.faultActive && (D.fault.lat==null||D.fault.lon==null)){
+    D.fault={active:true,feeder:sc.scada.faultFeeder,feeders:sc.scada.faultFeeders||[sc.scada.faultFeeder].filter(Boolean),
+      lat:sc.scada.faultLat,lon:sc.scada.faultLon};
     drawFault();
   }
-  if(!sc.faultActive && D.fault.active){
+  if(!sc.scada.faultActive && D.fault.active){
     D.fault={active:false,feeder:null,feeders:[],lat:null,lon:null};
     D.outagePoly={type:"FeatureCollection",features:[]};
     drawFault();
   }
-  if(sc.maintActive){
-    D.maint={active:true,feeder:sc.maintFeeder,
-      startLat:sc.maintStartLat,startLon:sc.maintStartLon,
-      endLat:sc.maintEndLat,endLon:sc.maintEndLon,
-      jobName:sc.maintJobName,jobNumber:sc.maintJobNumber};
+  if(sc.scada.maintActive){
+    D.maint={active:true,feeder:sc.scada.maintFeeder,
+      startLat:sc.scada.maintStartLat,startLon:sc.scada.maintStartLon,
+      endLat:sc.scada.maintEndLat,endLon:sc.scada.maintEndLon,
+      jobName:sc.scada.maintJobName,jobNumber:sc.scada.maintJobNumber};
     drawMaintenance();
   }
-  if(!sc.maintActive && D.maint.active){
+  if(!sc.scada.maintActive && D.maint.active){
     D.maint={active:false,feeder:null,startLat:null,startLon:null,endLat:null,endLon:null,jobName:null,jobNumber:null};
-    if(!sc.faultActive) D.outagePoly={type:"FeatureCollection",features:[]};
+    if(!sc.scada.faultActive) D.outagePoly={type:"FeatureCollection",features:[]};
     drawMaintenance();
   }
-  drawConductors(); drawSwitches(); drawReclosers(); drawSubstations(); drawOutage(); drawMaintenance();
+  drawOutage(); drawConductors(); drawSwitches(); drawReclosers(); drawSubstations(); drawMaintenance();
   updateHeader(); renderStatus(); renderSwitches();
   const banner=document.getElementById("fault-banner");
-  if(banner && sc.faultActive){
-    banner.textContent=sc.lineDisplayPhysical
+  if(banner && sc.scada.faultActive){
+    banner.textContent=sc.scada.lineDisplayPhysical
       ? "⚡ Real-time — สีสาย=ฟีดเดอร์ต้นทางจ่ายจริง · ดูแถบ Status ว่าใช้ฟีดเดอร์ไหนอยู่"
-      : sc.lineDisplayIsolation
-      ? "🔧 แยกวงจรแล้ว — โพลีก้อนยังเท่าเดิมจนกว่าจะจ่ายย้อนกลับ (ปิด tie / เปิด sectional)"
+      : sc.scada.lineDisplayIsolation
+      ? "🔧 แยกวงจรแล้ว — กดยืนยันปลายสาย (ขั้น NOTE) เพื่อแสดงไฟย้อนจาก KUA01"
       : "⚠ กรอกพิกัดจากหน้างาน (ห่างจากสายไม่เกิน 20 m) · เลือกฟีดเดอร์ถ้ามีหลายสาย · สาเหตุ/เฟส · คลิกแผนที่หรือกดตั้งจากพิกัด";
+  }
+}
+
+async function refreshLive(opts={}){
+  const force=opts.force===true;
+  if(!force&&D.mapBusy){D.pendingRefresh=true;return;}
+  // R74/R76: force queues behind in-flight poll; mapGen drops stale apply.
+  if(D.refreshBusy){D.pendingRefresh=true;return;}
+  D.refreshBusy=true;
+  const gen=D.mapGen;
+  setMapProcessing(true,"กำลังอัปเดตแผนที่…");
+  try{
+    const bundle=await j("/live-refresh");
+    // Stale poll started before fault/execute — do not wipe faultActive / RC OPEN.
+    if(gen!==D.mapGen) return;
+    applyLiveBundle(bundle);
+  }catch(err){
+    console.error("refreshLive failed:",err);
+  }finally{
+    D.refreshBusy=false;
+    setMapProcessing(false);
+    if(D.pendingRefresh&&!D.mapBusy){
+      D.pendingRefresh=false;
+      setTimeout(()=>refreshLive({force:true}),250);
+    }
   }
   scheduleRefreshLive();
 }
+
+/** After switching-plan execute — same single-pass refresh (R51/R53). */
+async function refreshLiveAfterPlanStep(){
+  await refreshLive({force:true});
+}
+
 const refreshAll = ()=>loadAll();
 
 function renderAll(){
-  drawConductors(); drawSwitches(); drawReclosers(); drawTransformers();
-  drawSubstations(); drawOutage(); drawFault(); drawMaintenance();
+  // Outage pane under network pane so restored PDA05 tint stays visible (R76).
+  drawOutage(); drawConductors(); drawSwitches(); drawReclosers(); drawTransformers();
+  drawSubstations(); drawFault(); drawMaintenance();
   updateHeader(); renderSwitches(); renderFeeders(); renderStatus();
 }
 
@@ -498,8 +594,8 @@ function drawConductors(){
     const p=f.properties;
     const off=p.status==="off";
     const pts=f.geometry.coordinates.map(([lo,la])=>[la,lo]);
-    const lineCol=off?"#3a3f4a":(p.displayColor||p.color);
-    L.polyline(pts,{color:lineCol,
+    const lineCol=off?"#3a3f4a":(p.displayColor||(p.supplyFeeder?feederColor(p.supplyFeeder):null)||p.color);
+    L.polyline(pts,{pane:"networkPane",color:lineCol,
       weight:off?1.5:2.1,opacity:off?.45:.95,dashArray:off?"4 4":null}).addTo(lyr.conductors);
   }
 }
@@ -520,7 +616,7 @@ function drawSwitchMarkers(layerKey, deviceClass){
       ?`<div class="m-do ${cl?"cl":"op"}" style="${out}"></div>`
       :`<div class="m-sw ${cl?"cl":"op"}" style="${out}"></div>`,
       isDo?[10,10]:[11,11]);
-    L.marker([la,lo],{icon})
+    L.marker([la,lo],{pane:"devicePane",icon})
       .bindPopup(swPopup(f))
       .on("click",()=>{D.selectedSwitch=p.id;renderSwitches();})
       .addTo(lyr[layerKey]);
@@ -553,7 +649,7 @@ function drawReclosers(){
     const [lo,la]=f.geometry.coordinates;
     const p=f.properties;
     const cl=p.status===1;
-    L.marker([la,lo],{icon:di(`<div class="m-rc${cl?"":" m-rc-open"}"></div>`,[10,9],[5,9])})
+    L.marker([la,lo],{pane:"devicePane",icon:di(`<div class="m-rc${cl?"":" m-rc-open"}"></div>`,[10,9],[5,9])})
       .bindPopup(`<div style="font-family:monospace;font-size:11px;min-width:200px">
         <b style="color:#ffd600">⚡ Recloser</b> · <b>${p.id}</b><br>
         Feeder:<span style="color:#00e5ff">${p.feeder}</span> ·
@@ -574,7 +670,7 @@ function drawTransformers(){
   if(!D.layers.transformers) return;
   for(const f of D.transformers){
     const [lo,la]=f.geometry.coordinates, p=f.properties;
-    L.marker([la,lo],{icon:di('<div style="width:6px;height:6px;border-radius:50%;background:#fbbf24;box-shadow:0 0 4px rgba(251,191,36,.7)"></div>',[6,6])})
+    L.marker([la,lo],{pane:"devicePane",icon:di('<div style="width:6px;height:6px;border-radius:50%;background:#fbbf24;box-shadow:0 0 4px rgba(251,191,36,.7)"></div>',[6,6])})
       .bindPopup(`<b>${p.id}</b><br>Feeder:${p.feeder}${p.rateKva?`<br>${p.rateKva} kVA`:""}<br><span style="color:#768390">${p.location||""}</span>`)
       .addTo(lyr.transformers);
   }
@@ -604,7 +700,7 @@ function drawSubstations(){
            สังเคราะห์อัตโนมัติ — feeder นี้ไม่มี CB ใน pscb.json
            จึงสมมุติว่ามีแหล่งจ่ายจากสถานีข้างเคียง · กด toggle ได้</div>`
       : "";
-    L.marker([la,lo],{icon})
+    L.marker([la,lo],{pane:"devicePane",icon})
       .bindPopup(`<div style="font-family:monospace;font-size:11px;min-width:200px">
         ${head}<br>
         Feeder:<span style="color:#00e5ff">${p.feeder}</span> · 
@@ -631,7 +727,7 @@ function drawOutage(){
     const p=f.properties||{};
     const fdCol=D.feeders.find(x=>x.id===p.feeder)?.color||"#f85149";
     const zoneLabel=sc.maintActive&&!sc.faultActive?"โซนบำรุงรักษา":"โซนไฟดับ (ตามสายจริง)";
-    L.polygon(ring,{color:fdCol,weight:2,dashArray:"6 4",fillColor:fdCol,fillOpacity:.2})
+    L.polygon(ring,{pane:"outagePane",color:fdCol,weight:2,dashArray:"6 4",fillColor:fdCol,fillOpacity:.18,interactive:true})
       .bindPopup(`<div style="font-family:monospace;font-size:11px">
         <b style="color:#f85149">${zoneLabel}</b><br>
         ฟีดเดอร์โซนนี้: <b>${p.feeder||"?"}</b><br>
@@ -640,6 +736,7 @@ function drawOutage(){
         โหนดในพื้นที่: ${(p.nodesAffected||0).toLocaleString()}</div>`)
       .addTo(lyr.outage);
   }
+  lyr.outage.bringToBack();
 }
 
 function drawFault(){
@@ -647,7 +744,7 @@ function drawFault(){
   const f=D.fault;
   if(f.active && f.lat!=null && f.lon!=null){
     const coordTxt=`${f.lat.toFixed(6)}, ${f.lon.toFixed(6)}`;
-    L.marker([f.lat,f.lon],{icon:di('<div class="m-fault"></div>',[18,18])})
+    L.marker([f.lat,f.lon],{pane:"faultPane",icon:di('<div class="m-fault"></div>',[18,18])})
       .bindPopup(`<div style="font-family:monospace;font-size:11px;min-width:200px">
         <b style="color:#f85149">⚠ จุดฟอลต์</b><br>
         ฟีดเดอร์: <b>${f.feeder||"?"}</b><br>
@@ -665,14 +762,14 @@ function drawMaintenance(){
   const m=D.maint;
   if(!m.active) return;
   if(m.startLat!=null && m.startLon!=null){
-    L.marker([m.startLat,m.startLon],{icon:di('<div class="m-maint-start"></div>',[14,14])})
+    L.marker([m.startLat,m.startLon],{pane:"faultPane",icon:di('<div class="m-maint-start"></div>',[14,14])})
       .bindPopup(`<div style="font-family:monospace;font-size:11px">
         <b style="color:#3fb950">● จุดเริ่มงาน</b><br>
         ${m.startLat.toFixed(6)}, ${m.startLon.toFixed(6)}</div>`)
       .addTo(lyr.maint);
   }
   if(m.endLat!=null && m.endLon!=null){
-    L.marker([m.endLat,m.endLon],{icon:di('<div class="m-maint-end"></div>',[14,14])})
+    L.marker([m.endLat,m.endLon],{pane:"faultPane",icon:di('<div class="m-maint-end"></div>',[14,14])})
       .bindPopup(`<div style="font-family:monospace;font-size:11px">
         <b style="color:#d29922">● จุดสิ้นสุดงาน</b><br>
         ${m.endLat.toFixed(6)}, ${m.endLon.toFixed(6)}</div>`)
@@ -680,7 +777,7 @@ function drawMaintenance(){
   }
   if(m.startLat!=null && m.startLon!=null && m.endLat!=null && m.endLon!=null){
     L.polyline([[m.startLat,m.startLon],[m.endLat,m.endLon]],
-      {color:"#d29922",weight:3,dashArray:"6 4",opacity:.85})
+      {pane:"faultPane",color:"#d29922",weight:3,dashArray:"6 4",opacity:.85})
       .bindPopup(`<div style="font-family:monospace;font-size:11px">
         <b style="color:#d29922">โซนบำรุงรักษา</b><br>
         งาน: ${m.jobNumber||"—"} · ${m.jobName||"—"}<br>
@@ -914,8 +1011,13 @@ function renderFeeders(){
   document.getElementById("fd-list").innerHTML=rows.join("");
 }
 
+const FEEDER_TINT={
+  PDA01:"#00e676",PDA02:"#ff5252",PDA03:"#ffd600",PDA04:"#40c4ff",
+  PDA05:"#b388ff",PDA06:"#ff6e40",PDA07:"#69f0ae",PDA08:"#f06292",
+  PDA09:"#ffab40",PDA10:"#ea80fc",KUA01:"#69f0ae",KUA07:"#ffd600",
+};
 function feederColor(id){
-  return D.feeders.find(x=>x.id===id)?.color||"#00e5ff";
+  return D.feeders.find(x=>x.id===id)?.color||FEEDER_TINT[id]||"#00e5ff";
 }
 function supplyFeederChips(feeders, label){
   if(!feeders||!feeders.length) return "";
@@ -956,6 +1058,11 @@ function renderStatus(){
       </div>`:""}</div>`,
     sc.lineDisplayPhysical && (sc.activeSupplyFeeders||[]).length
       ? supplyFeederChips(sc.activeSupplyFeeders,"⚡ ฟีดเดอร์ต้นทางจ่ายไฟ (ปัจจุบัน)")
+      :"",
+    sc.appBuild
+      ? `<div class="st-card"><div class="st-title">Build</div>
+         <div style="font-family:monospace;font-size:12px;color:#00e5ff">${sc.appBuild}</div>
+         <div style="font-size:10px;color:#768390;margin-top:4px">ถ้าไม่ใช่ R76 ให้รีสตาร์ท python app.py แล้ว Ctrl+F5</div></div>`
       :"",
     `<div class="st-card${sc.cbOpen>0?" warn-b":""}">
       <div class="st-title">🔌 Source CBs</div>
@@ -1120,13 +1227,51 @@ async function openMaintPlanModal(){
   renderPlan();
 }
 
-function handleFaultClick(e){
+async function handleFaultClick(e){
   if(!D.armMode) return;
   const rect=e.currentTarget.getBoundingClientRect();
   const latlng=map.containerPointToLatLng(L.point(e.clientX-rect.left,e.clientY-rect.top));
   document.getElementById("ff-lat").value=latlng.lat.toFixed(6);
   document.getElementById("ff-lon").value=latlng.lng.toFixed(6);
-  refreshNearbyFeeders(latlng.lat, latlng.lng, D.faultMapClickSnapM);
+  // Same as pre-multi-feeder UX / indexrun: click map → set fault immediately (R76).
+  setMapProcessing(true,"กำลังตั้งจุดฟอลต์…");
+  try{
+    await refreshNearbyFeeders(latlng.lat, latlng.lng, D.faultMapClickSnapM);
+    if(!selectedFaultFeeders().length){
+      alert("ไม่พบสายไฟฟ้าใกล้จุดที่คลิก — คลิกให้ใกล้สายมากขึ้น หรือเลือกฟีดเดอร์แล้วกด 「ตั้งจากพิกัด」");
+      return;
+    }
+    await doSetFault(latlng.lat, latlng.lng, true);
+  }finally{
+    setMapProcessing(false);
+  }
+}
+
+/** Apply /fault response immediately so Generate Plan + RC OPEN do not wait on live-refresh. */
+function applyFaultResponse(f, cause, phase){
+  D.fault={
+    active:!!f.active, feeder:f.feeder, feeders:f.feeders||[f.feeder].filter(Boolean),
+    lat:f.lat, lon:f.lon, cause, phase,
+  };
+  D.scada={
+    ...(D.scada||{}),
+    faultActive:true,
+    faultFeeder:f.feeder,
+    faultFeeders:f.feeders||[f.feeder].filter(Boolean),
+    faultLat:f.lat,
+    faultLon:f.lon,
+    faultCause:cause,
+    faultPhase:phase,
+  };
+  for(const id of (f.trippedReclosers||[])){
+    patchDeviceStatus(id, "OPEN", 0);
+  }
+  D.mapGen=(D.mapGen||0)+1;
+  drawFault();
+  drawReclosers();
+  updateHeader();
+  renderStatus();
+  renderSwitches();
 }
 
 async function doSetFault(lat,lon,mapClick=false){
@@ -1139,18 +1284,27 @@ async function doSetFault(lat,lon,mapClick=false){
   }
   const body={lat,lon,cause,phase,feeders,feeder:feeders[0]};
   if(mapClick) body.mapClick=true;
-  const f=await post("/fault", body);
+  setMapProcessing(true,"กำลังตั้งจุดฟอลต์…");
+  let f;
+  try{
+    f=await post("/fault", body);
+  }catch(err){
+    setMapProcessing(false);
+    alert("ตั้งฟอลต์ไม่สำเร็จ: "+err);
+    return;
+  }
   if(!f.active){
+    setMapProcessing(false);
     alert(f.error||"ไม่พบสายไฟฟ้าใกล้พิกัดนี้ — ลองคลิกบนสายบนแผนที่หรือปรับพิกัดให้ใกล้ขึ้น");
     return;
   }
-  D.fault={active:f.active,feeder:f.feeder,feeders:f.feeders||[f.feeder],lat:f.lat,lon:f.lon,cause,phase};
   document.getElementById("ff-lat").value=f.lat?.toFixed(6)||"";
   document.getElementById("ff-lon").value=f.lon?.toFixed(6)||"";
   D.pendingRefresh=false;
   D.mapBusy=false;
   if(D.armMode) toggleArm();
-  drawFault();
+  applyFaultResponse(f, cause, phase);
+  // Full map paint (outage + conductor tint) — Generate Plan already enabled above.
   await refreshLive({force:true});
 }
 
@@ -1159,12 +1313,26 @@ async function clearFault(){
   D.fault={active:false,feeder:null,feeders:[],lat:null,lon:null};
   D.outagePoly={type:"FeatureCollection",features:[]};
   D.plan=null; D.planDone=0; D.planNormDone=0;
+  D.mapGen=(D.mapGen||0)+1;
+  if(D.scada){
+    D.scada.faultActive=false;
+    D.scada.faultFeeder=null;
+    D.scada.faultFeeders=[];
+  }
   document.getElementById("plan-norm-steps").innerHTML="";
   document.getElementById("btn-exec-norm").style.display="none";
-  drawFault(); drawOutage(); await refreshLive();
+  drawFault(); drawOutage(); updateHeader();
+  await refreshLive({force:true});
 }
 
 async function openPlanModal(){
+  const planBtn=document.getElementById("btn-plan");
+  const prevTitle=planBtn?.title||"";
+  if(planBtn){
+    planBtn.disabled=true;
+    planBtn.textContent="⏳ กำลังวิเคราะห์…";
+    planBtn.title="กำลังวิเคราะห์ switching plan…";
+  }
   setPlanPanelOpen(true);
   document.getElementById("plan-summary").innerHTML="⏳ กำลังวิเคราะห์ switching plan…";
   document.getElementById("plan-next-hint").style.display="none";
@@ -1181,14 +1349,31 @@ async function openPlanModal(){
   catch(err){
     document.getElementById("plan-summary").innerHTML=`<span style="color:#f85149">❌ เกิดข้อผิดพลาด: ${err}</span>`;
     document.getElementById("plan-norm-steps").innerHTML="";
+    if(planBtn){
+      planBtn.disabled=!(D.scada?.faultActive||D.fault?.active);
+      planBtn.textContent="⚙ Generate Plan";
+      planBtn.title=prevTitle||"วิเคราะห์ switching เพื่อลดผลกระทบ";
+    }
     return;
   }
   if(plan.error){
     document.getElementById("plan-summary").innerHTML=`<span style="color:#f85149">❌ ${plan.error}</span>`;
     document.getElementById("plan-norm-steps").innerHTML="";
+    if(planBtn){
+      planBtn.disabled=!(D.scada?.faultActive||D.fault?.active);
+      planBtn.textContent="⚙ Generate Plan";
+      planBtn.title=prevTitle||"วิเคราะห์ switching เพื่อลดผลกระทบ";
+    }
     return;
   }
-  D.plan=plan; D.planDone=0; D.planNormDone=0;
+  D.plan=plan;
+  D.planDone=plan.switchingPlanExecuted??0;
+  D.planNormDone=0;
+  if(planBtn){
+    planBtn.disabled=!(D.scada?.faultActive||D.fault?.active);
+    planBtn.textContent="⚙ Generate Plan";
+    planBtn.title=prevTitle||"วิเคราะห์ switching เพื่อลดผลกระทบ";
+  }
   renderPlan();
 }
 function setPlanPanelOpen(open){
@@ -1430,8 +1615,9 @@ function updatePlanProgress(){
   document.getElementById("btn-exec-all").disabled=(done>=total);
 }
 
-function patchDeviceStatus(id, action){
-  const st=action==="CLOSE"?1:0, state=st?"CLOSE":"OPEN";
+function patchDeviceStatus(id, action, newStatus){
+  const st=newStatus!=null?newStatus:(action==="CLOSE"?1:0);
+  const state=st?"CLOSE":"OPEN";
   for(const f of D.switches){
     if(f.properties.id===id){f.properties.status=st;f.properties.state=state;return;}
   }
@@ -1440,20 +1626,79 @@ function patchDeviceStatus(id, action){
   }
 }
 
+/** Immediate UI sync from execute response — do not wait for /live-refresh (R55/R75). */
+function applyExecuteResponse(resp, step){
+  if(resp.switchId && step.action!=="NOTE"){
+    patchDeviceStatus(resp.switchId, resp.action, resp.newStatus);
+    drawSwitches(); drawReclosers(); renderSwitches();
+  }
+  // Optional liveMap (legacy) — map paint prefers /live-refresh after status (R75).
+  if(resp.liveMap?.conductors?.features && resp.liveMap?.scada){
+    D.mapGen=(D.mapGen||0)+1;
+    applyLiveBundle(resp.liveMap);
+  }
+  if(!D.scada) return;
+  if(resp.lineDisplayPhysical!=null){
+    D.scada.lineDisplayPhysical=resp.lineDisplayPhysical;
+    D.scada.lineDisplayIsolation=!!D.scada.faultActive && !resp.lineDisplayPhysical;
+  }
+  if(resp.kuaLineEndAck!=null) D.scada.lineEndRestoreActive=resp.kuaLineEndAck;
+  updateHeader(); renderStatus();
+  const banner=document.getElementById("fault-banner");
+  if(banner && D.scada.faultActive){
+    banner.textContent=resp.lineDisplayPhysical
+      ? "⚡ Real-time — สีสาย=ฟีดเดอร์ต้นทางจ่ายจริง · ดูแถบ Status ว่าใช้ฟีดเดอร์ไหนอยู่"
+      : D.scada.lineDisplayIsolation
+      ? "🔧 แยกวงจรแล้ว — กดยืนยันปลายสาย (ขั้น NOTE) เพื่อแสดงไฟย้อนจาก KUA01"
+      : banner.textContent;
+  }
+}
+
 async function executeStep(i){
   const p=D.plan; if(!p||i!==D.planDone) return;
   const step=p.steps[i];
   const hint=document.getElementById("plan-next-hint");
-  if(hint){hint.style.display="block";hint.textContent="⏳ กำลังอัปเดตแผนที่…";}
+  if(hint){hint.style.display="block";hint.textContent="⏳ กำลังดำเนินการ…";}
+  setMapProcessing(true,"กำลังดำเนินการขั้นตอน…");
+  // R75: show OPEN/CLOSE (e.g. 7S-12) immediately; map refresh can take longer.
+  if(step.action!=="NOTE" && step.switchId){
+    patchDeviceStatus(step.switchId, step.action);
+    drawSwitches(); drawReclosers(); renderSwitches();
+  }
   try{
-    await post(`/switching-plan/execute/${i+1}`,{action:step.action,switchId:step.switchId});
-    if(step.action!=="NOTE") patchDeviceStatus(step.switchId, step.action);
-    D.planDone++; renderPlanSteps(); updatePlanProgress();
-    if(step.action!=="NOTE") await refreshLive();
+    const resp=await post(`/switching-plan/execute/${i+1}`,{
+      action:step.action,
+      switchId:step.switchId,
+      planEffect:step.planEffect||null,
+      instructionTh:step.instructionTh||step.reason||null,
+    });
+    D.planDone=resp.switchingPlanExecuted??(i+1);
+    D.mapGen=(D.mapGen||0)+1;
+    applyExecuteResponse(resp, step);
+    renderPlanSteps(); updatePlanProgress();
+    if(hint){
+      hint.textContent=resp.lineDisplayPhysical
+        ? "⏳ ยืนยันแล้ว — กำลังวาดสายจ่ายไฟบนแผนที่…"
+        : step.action!=="NOTE"
+        ? "✓ อัปเดตสถานะอุปกรณ์แล้ว · กำลังโหลดแผนที่…"
+        : "✓ ยืนยันขั้นตอนแล้ว · กำลังโหลดแผนที่…";
+    }
+    await refreshLiveAfterPlanStep();
     const next=document.getElementById(`plan-step-${D.planDone}`);
     if(next) next.scrollIntoView({behavior:"smooth",block:"nearest"});
-  }catch(err){ alert("ดำเนินการไม่สำเร็จ: "+err); renderPlanSteps(); }
-  finally{ updatePlanProgress(); }
+    if(hint){
+      hint.textContent=resp.lineDisplayPhysical
+        ? "✓ อัปเดตแผนที่แล้ว — แสดงสีฟีดเดอร์ต้นทางจ่ายจริง"
+        : step.action==="NOTE" ? "✓ ยืนยันขั้นตอนแล้ว — รอขั้นถัดไป" : "✓ อัปเดตสถานะอุปกรณ์แล้ว";
+    }
+  }catch(err){
+    if(step.action!=="NOTE" && step.switchId){
+      patchDeviceStatus(step.switchId, step.action==="OPEN"?"CLOSE":"OPEN");
+      drawSwitches(); drawReclosers(); renderSwitches();
+    }
+    alert("ดำเนินการไม่สำเร็จ: "+err); renderPlanSteps();
+  }
+  finally{ setMapProcessing(false); updatePlanProgress(); }
 }
 
 async function executeNormStep(i){
@@ -1463,10 +1708,11 @@ async function executeNormStep(i){
     await post(`/switching-plan/normalize/execute/${i+1}`,
       {action:step.action,switchId:step.switchId});
     if(step.action!=="NOTE") patchDeviceStatus(step.switchId, step.action);
+    drawSwitches(); drawReclosers(); renderSwitches();
     D.planNormDone++; renderNormSteps();
     const normBtn=document.getElementById("btn-exec-norm");
     if(normBtn) normBtn.disabled=(D.planNormDone>=p.normalizationSteps.length);
-    if(step.action!=="NOTE") await refreshLive();
+    if(step.action!=="NOTE") await refreshLiveAfterPlanStep();
     const next=document.getElementById(`plan-norm-step-${D.planNormDone}`);
     if(next) next.scrollIntoView({behavior:"smooth",block:"nearest"});
   }catch(err){ alert("ดำเนินการไม่สำเร็จ: "+err); renderNormSteps(); }
@@ -1498,7 +1744,8 @@ async function executeAll(){
 let _refreshTimer=null;
 function scheduleRefreshLive(){
   clearInterval(_refreshTimer);
-  const ms=(D.fault?.active||D.scada?.faultActive||D.scada?.maintActive)?12000:5000;
+  const active=D.fault?.active||D.scada?.faultActive||D.scada?.maintActive;
+  const ms=active?30000:15000;
   _refreshTimer=setInterval(refreshLive,ms);
 }
 

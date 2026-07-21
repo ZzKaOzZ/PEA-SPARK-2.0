@@ -230,8 +230,122 @@ Architectural fixes applied (over original appdemo.py):
       sectionalising so an open bypass does not truncate the main-line display.
 
   R51 Operator map refresh: ``/live-refresh`` bundles conductor + SCADA + outage
-      in one cached pass (avoids triple conductor scan on parallel browser fetches);
-      compute cache uses a lock so concurrent requests do not repeat BFS work.
+      + switches + reclosers + substations in one cached single-pass build
+      (``live_map_bundle``); browser polls at 15–30 s with in-flight guard.
+
+  R52 KUA01 mainline preset switching: faults between PDA10S-08↔PDA10S-13,
+      PDA10S-13↔PDA10S-14, or PDA10S-14↔KUA01R-04 use operator-defined step
+      sequences (RC/tie/sectionaliser) instead of the generic FISR planner;
+      other feeders and out-of-range KUA01 faults keep the existing planner.
+
+  R53 KUA line-end map display waits for operator NOTE ack (step 3) after
+      isolation opens a sectionaliser; tie CLOSE then shows neighbour-feeder
+      colours.  Plan execute tracks steps on server state and refreshes live map.
+      RC bypass blades (e.g. KUA01S-15) no longer block conductor ON display
+      during KUA line-end restoration; open bypass at a closed RC (e.g. KUA01R-04)
+      must not truncate line-end energization tracing (R53).  Line-end display no
+      longer trims hop-0 seed when a sectionaliser is opened for restoration (R54).
+
+  R55 Tripped isolation RCs no longer block conductor paint during back-feed;
+      supply map extends through conductor spans; PDA02 CB seeds colour segments
+      past PDA10R-01 after PDA02S-08 closes.
+
+  R56 KUA line-end-only restore (step 3 NOTE ack, tie still open) trims mesh
+      bleed past tripped RCs and caps hop at the open restoration sectionaliser
+      so supply colours flow from the remote line end (e.g. KUA01R-04 → PDA10S-13)
+      not substation-ward from PDA10S-08; PDA02 stays dark until PDA02S-08 closes.
+
+  R57 PDA interconnect back-feed corridor (PDA02S-08 → PDA10R-01) walks the mesh
+      bidirectionally within the tie↔RC hop band so ring paths energise and tint
+      PDA02; supply overwrite uses the same corridor for map colour + outage trim.
+
+  R58 Supply BFS overwrite no longer re-queues settled nodes — fixes hang on step 4.
+
+  R59 PDA interconnect back-feed stops at open isolation RCs (e.g. PDA10R-01):
+      no load-side energization/colour past the RC; open RCs block conductor paint
+      (RC bypass blades still ignored). PDA02 tint only tie → RC corridor.
+
+  R60 Foreign PDA supply tint cannot inherit or extend along the KUA mesh past the
+      tie→RC paint zone — fixes purple bleed on KUA01/KUA07 mainline.
+
+  R61 Tie→RC corridor uses hop-cap graph walk (not hop-band); line-end + PDA
+      back-feed split so KUA01 lights only past the open sectional, PDA02 corridor
+      wins supply colour; processing bar during live-refresh.
+
+  R62 Isolation envelope: source corridors union paths to every open tie/RC (not
+      only the nearest) so main-line polygons stay when a lateral RC and a main-line
+      tie are both opened.  Live restoration trim keeps the operator-blocked section
+      dark until ties/RCs are reclosed for system restoration.
+
+  R63 Step-4 back-feed display: conductor span extension is used only for supply
+      tinting — OFF state and outage polygons use actual node energization so the
+      S-08 / R-01 / S-13 block stays shaded after PDA02 tie CLOSE until full restore.
+
+  R64 Step-4 line-end + PDA back-feed: live energization unions capped line-end
+      supply past the open sectional with the tie→RC corridor; outage polygons and
+      OFF conductors never extend past PDA10S-13 toward the KUA line end.
+
+  R65 Step-4 map paint: substation-ward force-OFF (open sectional floor) must not
+      darken the PDA interconnect corridor — segments already live from tie→RC
+      back-feed stay ON with PDA02 supply colour; residual outage remains only in
+      the S-08 / R-01 / S-13 isolation block.
+
+  R66 KUA multi-sectional isolation (e.g. PDA10S-13 + PDA10S-14): line-end
+      supply floor uses the outermost open sectional (max hop), not the innermost;
+      open sectionals always block interconnect back-feed so the fault band between
+      two opened sectionalisers stays dark with outage polygons after restoration.
+
+  R67 KUA live energization stays on the KUA mesh (no unbounded adjacency flood
+      into PDA feeders). Interconnect back-feed hop-cap includes open sectionals
+      so PDA10 tint covers S-08→S-14 laterals only; unrelated feeders keep native
+      GIS colours during restoration (no KUA01 paint across the whole map).
+
+  R68 Fault behind a recloser (all feeders): auto-OPEN the nearest upstream
+      closed RC and limit the initial outage corridor so darkness only reaches
+      back to that RC — not past it toward the CB/source.
+
+  R69 Lateral RC (e.g. PDA07R-01): outage behind the RC is the load-side island
+      only (hop ≥ RC, reachable from RC load taps) — must not paint the main
+      line past the tap using a feeder-wide hop floor.  Lit main-line segments
+      adjacent to the RC stay ON; 45 m outage buffers / open-tie discs must not
+      GIS-bleed across the tap onto the trunk.
+
+  R70 PDA↔PDA grid interconnects with GIS ``ENABLED=0`` (field-operated N/O ties
+      e.g. PDA05S-11, PDA05S-15 between PDA05↔PDA07) load onto the map like
+      KUA↔PDA ties — previously skipped so they vanished from the operator view.
+
+  R71 PDA07R-01 lateral preset (PDA07 only): fault between RC↔PDA07S-12 opens
+      PDA07S-12 then closes PDA05S-15 (+ repair); fault load-side of PDA07S-12
+      opens PDA07S-12 then closes PDA05S-11.  Closed PDA05 interconnect paints
+      PDA05 supply colour up to the open sectional; open-RC forced-dark must not
+      strip that legitimate back-feed.
+
+  R72 Lateral RC island uses hop-tree load side (source-ward hits RC): mesh must
+      not pull the main line past the tap into the outage.  Open-lateral forced-dark
+      only darkens that island — never the CB/mainline side.  PDA interconnect
+      restore walks stay off the CB-side of open lateral RCs.
+
+  R73 KUA line-end restoration sectionals must not apply on PDA feeders: opening
+      PDA07S-12 was ignored as a paint/supply barrier (treated like KUA S-13),
+      so PDA07 GIS colour leaked onto the PDA05S-15 back-feed corridor.
+
+  R74 PDA interconnect restore: force back-feed tint on every ON segment that
+      touches ``back_paint_zone`` (e.g. coastal spur past PDA05S-15).  Execute
+      step returns ``liveMap`` so the UI paints immediately without losing a
+      race to a stale ``/live-refresh`` poll.
+
+  R75 Execute must not block on full ``liveMap`` rebuild: embedding the map in
+      ``/switching-plan/execute`` made step 1 (e.g. OPEN PDA07S-12) appear stuck
+      because the switch status response waited for a multi-minute map pass.
+      Status returns immediately; map refresh stays on ``/live-refresh``.
+
+  R76 PDA interconnect back-feed corridor: mesh walk from closed tie on the
+      faulted feeder (not clipped to live-display ``phys``) so forced-dark nodes
+      on the tie→open-sectional highway stay lit; map off-check uses
+      ``paint_energized`` and keeps approach legs ON at the open sectional.
+      Outage polygons from fault-side OFF legs must not GIS-bleed onto the
+      restored corridor (45 m buffers across the open sectional / closed tie).
+      Map layer order keeps conductors above outage fill at PDA05S-15.
 """
 from __future__ import annotations
 import json
@@ -490,6 +604,11 @@ class NetworkState:
         self.snapshot_cb:      dict[str, int] | None = None
         self.snapshot_recloser: dict[str, int] | None = None
 
+        # Active switching-plan runtime (operator execute progress — R53)
+        self.switching_plan_steps: list[dict] = []
+        self.switching_plan_executed: int = 0
+        self.kua_line_end_display_ack: bool = False
+
         # Maintenance work zone (R20)
         self.maint_active:     bool = False
         self.maint_start_lat:  float | None = None
@@ -514,12 +633,34 @@ def _invalidate_compute_cache(s: NetworkState) -> None:
 
 
 def _cc_get(s: NetworkState, key: str, factory):
+    """Versioned compute cache — never store a result built across an invalidate.
+
+    Without the version check, a slow ``live_refresh`` started before ``/fault``
+    can finish after invalidate and poison the cache with a no-fault payload,
+    leaving FAULT FEEDER=none and Generate Plan disabled (R76)."""
     if s._cc_store.get("_ver") != s._cc_ver:
         s._cc_store.clear()
         s._cc_store["_ver"] = s._cc_ver
-    if key not in s._cc_store:
-        s._cc_store[key] = factory()
-    return s._cc_store[key]
+    if key in s._cc_store:
+        return s._cc_store[key]
+    ver_before = s._cc_ver
+    value = factory()
+    if s._cc_ver != ver_before:
+        # Topology changed mid-compute — recompute once against current version.
+        if s._cc_store.get("_ver") != s._cc_ver:
+            s._cc_store.clear()
+            s._cc_store["_ver"] = s._cc_ver
+        if key in s._cc_store:
+            return s._cc_store[key]
+        ver_retry = s._cc_ver
+        value = factory()
+        if s._cc_ver != ver_retry:
+            return value
+    if s._cc_store.get("_ver") != s._cc_ver:
+        s._cc_store.clear()
+        s._cc_store["_ver"] = s._cc_ver
+    s._cc_store[key] = value
+    return value
 
 
 def load_json(filename: str) -> dict:
@@ -968,10 +1109,13 @@ def gis_switch_loadable(
     xy: tuple[float, float] | None = None,
     rc_points: list[tuple[float, float]] | None = None,
 ) -> bool:
-    """Load switch onto map/topology — KUA↔PDA ties + RC bypass blades (R47/R50)."""
+    """Load switch onto map/topology — grid ties + RC bypass blades (R47/R50/R70).
+
+    GIS ``ENABLED=0`` still loads when the asset is a cross-feeder interconnect
+    (KUA↔PDA or PDA↔PDA) or an RC bypass blade operated in the field."""
     if gis_device_enabled(props):
         return True
-    if is_kua_pda_interconnect(props):
+    if is_grid_interconnect_switch(props):
         return True
     return is_recloser_bypass_switch(props, xy, rc_points or [])
 
@@ -1622,11 +1766,402 @@ def _tripped_isolation_rc_ids(s: NetworkState) -> frozenset[str]:
     )
 
 
+def _compute_protection_hop_distance(
+    s: NetworkState, feeder: str,
+) -> dict[str, int]:
+    """Topological hop from feeder source ignoring live open devices (R68).
+
+    Protection geometry must stay stable after the protecting RC trips — PDA
+    CB-hop maps otherwise omit the open RC node and the trim floor disappears."""
+    if _is_kua_feeder(feeder):
+        seed = _kua_source_seed_node(s, feeder)
+        if not seed:
+            return {}
+        mesh = _kua_mesh_allowed(s, feeder)
+        dist: dict[str, int] = {seed: 0}
+        queue: deque[str] = deque([seed])
+        while queue:
+            cur = queue.popleft()
+            for nb in s.adjacency.get(cur, set()):
+                if nb in dist or nb not in mesh:
+                    continue
+                dist[nb] = dist[cur] + 1
+                queue.append(nb)
+        return dist
+
+    cb_nodes = _feeder_active_cb_nodes(s, feeder)
+    if not cb_nodes:
+        return {}
+    mesh = _feeder_mesh_nodes(s, feeder)
+    dist: dict[str, int] = {}
+    queue: deque[tuple[str, int]] = deque((n, 0) for n in cb_nodes)
+    while queue:
+        cur, d = queue.popleft()
+        if cur in dist or cur not in mesh:
+            continue
+        dist[cur] = d
+        for nb in s.adjacency.get(cur, set()):
+            if nb in dist or nb not in mesh:
+                continue
+            if _blocks_interconnect_cross_feeder(s, cur, nb):
+                continue
+            if _is_cross_feeder_tie_hop(s, cur, nb):
+                continue
+            queue.append((nb, d + 1))
+    return dist
+
+
+def _feeder_protection_hop_map(s: NetworkState, feeder: str) -> dict[str, int]:
+    """Hop from the feeder source — lower hop = closer to CB / PDA-side seed."""
+    if not feeder:
+        return {}
+    return _cc_get(
+        s, f"prot_hops_{feeder}",
+        lambda: _compute_protection_hop_distance(s, feeder),
+    )
+
+
+def _recloser_on_feeder(s: NetworkState, fid: str, feeder: str) -> bool:
+    """True when recloser ``fid`` belongs to ``feeder`` (GIS tag or snapped node)."""
+    node = s.recloser_node.get(fid)
+    if not node:
+        return False
+    if s.node_feeder.get(node) == feeder:
+        return True
+    props, _ = _device_meta(s, fid)
+    return str(props.get("feeder", "")) == feeder
+
+
+def _upstream_reachable_to_rc(
+    s: NetworkState,
+    fault: str,
+    rc_node: str,
+    hop: dict[str, int],
+    mesh: set[str],
+) -> bool:
+    """True when ``rc_node`` lies on a source-ward walk from ``fault`` (R68)."""
+    fault_hop = hop.get(fault)
+    rc_hop = hop.get(rc_node)
+    if fault_hop is None or rc_hop is None or rc_hop >= fault_hop:
+        return False
+    if fault == rc_node:
+        return True
+    seen: set[str] = {fault}
+    queue: deque[str] = deque([fault])
+    while queue:
+        cur = queue.popleft()
+        for nb in s.adjacency.get(cur, set()):
+            if nb in seen or nb not in mesh:
+                continue
+            nh = hop.get(nb)
+            if nh is None or nh > fault_hop:
+                continue
+            if nb == rc_node:
+                return True
+            seen.add(nb)
+            queue.append(nb)
+    return False
+
+
+def _protecting_recloser_ids_for_fault(
+    s: NetworkState,
+    fault: str,
+    feeder: str,
+) -> list[str]:
+    """Nearest closed upstream recloser(s) protecting a load-side fault (R68).
+
+    Among closed RCs on ``feeder`` with hop < fault hop and a source-ward path
+    to the fault, pick those with the largest hop (closest to the fault)."""
+    hop = _feeder_protection_hop_map(s, feeder)
+    fault_hop = hop.get(fault)
+    if fault_hop is None:
+        return []
+    mesh = (
+        _kua_mesh_allowed(s, feeder) if _is_kua_feeder(feeder)
+        else _feeder_mesh_nodes(s, feeder)
+    )
+    candidates: list[tuple[int, str]] = []
+    for fid, node in s.recloser_node.items():
+        if s.recloser_status.get(fid, 1) != 1:
+            continue
+        if not _recloser_on_feeder(s, fid, feeder):
+            continue
+        rc_hop = hop.get(node)
+        if rc_hop is None or rc_hop >= fault_hop:
+            continue
+        if not _upstream_reachable_to_rc(s, fault, node, hop, mesh):
+            continue
+        candidates.append((rc_hop, fid))
+    if not candidates:
+        return []
+    best_hop = max(h for h, _ in candidates)
+    return sorted(fid for h, fid in candidates if h == best_hop)
+
+
+def _auto_trip_protecting_reclosers(s: NetworkState) -> list[str]:
+    """OPEN nearest upstream RC for each faulted feeder when fault is behind it."""
+    if not s.fault_node:
+        return []
+    tripped: list[str] = []
+    for feeder in sorted(_fault_target_feeders(s)):
+        fault = _fault_node_on_feeder(s, feeder) or s.fault_node
+        if not fault:
+            continue
+        for fid in _protecting_recloser_ids_for_fault(s, fault, feeder):
+            if s.recloser_status.get(fid, 1) != 1:
+                continue
+            s.recloser_status[fid] = 0
+            tripped.append(fid)
+            for rc in s.reclosers:
+                if rc["properties"].get("id") == fid:
+                    rc["properties"]["status"] = 0
+                    rc["properties"]["state"] = "OPEN"
+                    break
+    return tripped
+
+
+def _recloser_is_lateral(s: NetworkState, fid: str) -> bool:
+    """True for lateral / spur reclosers (GIS OPERATIONT=L)."""
+    for rc in s.reclosers:
+        if rc["properties"].get("id") != fid:
+            continue
+        props = rc["properties"]
+        if str(props.get("lineKind", "")).lower() == "lateral":
+            return True
+        return str(props.get("operationType", "")).upper() == "L"
+    props, _ = _device_meta(s, fid)
+    return str(props.get("operationType", props.get("OPERATIONT", ""))).upper() == "L"
+
+
+def _sourceward_reaches_target(
+    s: NetworkState,
+    start: str,
+    target: str,
+    hop: dict[str, int],
+    mesh: set[str],
+    *,
+    min_hop: int,
+) -> bool:
+    """True when walking only to lower-hop neighbours can reach ``target``.
+
+    Stops if hop falls below ``min_hop`` without hitting ``target`` — that path
+    bypassed the device on the main/source corridor (R72)."""
+    if start == target:
+        return True
+    seen: set[str] = {start}
+    queue: deque[str] = deque([start])
+    while queue:
+        cur = queue.popleft()
+        cur_hop = hop.get(cur)
+        if cur_hop is None:
+            continue
+        for nb in s.adjacency.get(cur, set()):
+            if nb not in mesh or nb in seen:
+                continue
+            nb_hop = hop.get(nb)
+            if nb_hop is None or nb_hop >= cur_hop:
+                continue
+            if nb == target:
+                return True
+            if nb_hop < min_hop:
+                continue
+            seen.add(nb)
+            queue.append(nb)
+    return False
+
+
+def _rc_load_side_island(
+    s: NetworkState,
+    rc_fid: str,
+    feeder: str,
+) -> set[str]:
+    """Nodes behind a recloser on its load taps (R69/R72).
+
+    A node is on the load side when a source-ward (strictly decreasing hop)
+    walk that stays at hop ≥ RC can hit the RC — i.e. its hop-tree path to
+    the CB goes through the RC.  Main-line nodes past the tap typically walk
+    source-ward down the trunk without hitting the lateral RC, so they stay
+    out even when mesh links share hop ≥ RC.
+    """
+    rc_node = s.recloser_node.get(rc_fid)
+    if not rc_node:
+        return set()
+    hop = _feeder_protection_hop_map(s, feeder)
+    rc_hop = hop.get(rc_node)
+    if rc_hop is None:
+        return {rc_node}
+    mesh = (
+        _kua_mesh_allowed(s, feeder) if _is_kua_feeder(feeder)
+        else _feeder_mesh_nodes(s, feeder)
+    )
+    island: set[str] = {rc_node}
+    for node, node_hop in hop.items():
+        if node not in mesh or node == rc_node:
+            continue
+        if node_hop <= rc_hop:
+            continue
+        if _sourceward_reaches_target(
+            s, node, rc_node, hop, mesh, min_hop=rc_hop,
+        ):
+            island.add(node)
+    return island
+
+
+def _open_lateral_rc_source_side(
+    s: NetworkState,
+    rc_status: dict[str, int] | None = None,
+) -> set[str]:
+    """Feeder nodes NOT on the load island of any open lateral RC (R72)."""
+    rc_st = rc_status if rc_status is not None else s.recloser_status
+    blocked: set[str] = set()
+    for fid, st in rc_st.items():
+        if st != 0 or fid not in s.recloser_node:
+            continue
+        if not _recloser_is_lateral(s, fid):
+            continue
+        props, _ = _device_meta(s, fid)
+        feeder = str(props.get("feeder", "") or "")
+        if not feeder:
+            feeder = str(s.node_feeder.get(s.recloser_node[fid], "") or "")
+        if not feeder:
+            continue
+        island = _rc_load_side_island(s, fid, feeder)
+        mesh = (
+            _kua_mesh_allowed(s, feeder) if _is_kua_feeder(feeder)
+            else _feeder_mesh_nodes(s, feeder)
+        )
+        blocked |= mesh - island
+    return blocked
+
+
+def _fault_component_in_island(
+    s: NetworkState, fault: str, island: set[str],
+) -> set[str]:
+    """Connected component of ``fault`` inside ``island``."""
+    if fault not in island:
+        return set()
+    seen: set[str] = {fault}
+    queue: deque[str] = deque([fault])
+    while queue:
+        cur = queue.popleft()
+        for nb in s.adjacency.get(cur, set()):
+            if nb in island and nb not in seen:
+                seen.add(nb)
+                queue.append(nb)
+    return seen
+
+
+def _protecting_lateral_rc_mainline_guard(s: NetworkState) -> set[str]:
+    """Source-side (main-line) nodes at open protecting lateral RCs (R69).
+
+    Outage polygons from the lateral island must not 45 m-bleed across the tap
+    onto these trunk nodes — darkness stops at the RC.
+    """
+    if not s.fault_node:
+        return set()
+    guard: set[str] = set()
+    snap_rc = s.snapshot_recloser or {}
+    for feeder in sorted(_fault_target_feeders(s)):
+        fault = _fault_node_on_feeder(s, feeder) or s.fault_node
+        if not fault:
+            continue
+        hop = _feeder_protection_hop_map(s, feeder)
+        fault_hop = hop.get(fault)
+        if fault_hop is None:
+            continue
+        for fid, st in s.recloser_status.items():
+            if st != 0 or snap_rc.get(fid, 1) != 1:
+                continue
+            if not _recloser_on_feeder(s, fid, feeder):
+                continue
+            if not _recloser_is_lateral(s, fid):
+                continue
+            rc_node = s.recloser_node.get(fid)
+            if not rc_node:
+                continue
+            rc_hop = hop.get(rc_node)
+            if rc_hop is None or rc_hop >= fault_hop:
+                continue
+            island = _rc_load_side_island(s, fid, feeder)
+            for nb in s.adjacency.get(rc_node, set()):
+                if nb not in island:
+                    guard.add(nb)
+                    # One hop further on the trunk so 45 m buffers stay off main.
+                    for nb2 in s.adjacency.get(nb, set()):
+                        if nb2 not in island and nb2 != rc_node:
+                            guard.add(nb2)
+    return guard
+
+
+def _trim_zone_at_protecting_reclosers(
+    s: NetworkState,
+    zone: set[str],
+    feeder: str,
+    fault: str,
+) -> set[str]:
+    """Drop nodes on the source side of a tripped protecting RC (R68/R69).
+
+    * Mainline RC: hop floor (mesh rings can bypass the open RC node).
+    * Lateral RC: keep only the load-side island behind the RC — never the
+      main line past the tap.
+    """
+    hop = _feeder_protection_hop_map(s, feeder)
+    fault_hop = hop.get(fault)
+    if fault_hop is None:
+        return zone
+
+    snap_rc = s.snapshot_recloser or {}
+    protecting: list[tuple[int, str, str]] = []  # hop, fid, node
+    for fid, st in s.recloser_status.items():
+        if st != 0 or snap_rc.get(fid, 1) != 1:
+            continue
+        if not _recloser_on_feeder(s, fid, feeder):
+            continue
+        node = s.recloser_node.get(fid)
+        if not node:
+            continue
+        rc_hop = hop.get(node)
+        if rc_hop is None or rc_hop >= fault_hop:
+            continue
+        protecting.append((rc_hop, fid, node))
+    if not protecting:
+        return zone
+
+    # Prefer the nearest upstream RC (largest hop < fault).
+    protecting.sort(key=lambda item: item[0], reverse=True)
+    _rh, best_fid, best_node = protecting[0]
+
+    if _recloser_is_lateral(s, best_fid):
+        island = _rc_load_side_island(s, best_fid, feeder)
+        if fault in island:
+            return _fault_component_in_island(s, fault, island) | {best_node}
+        # Fault outside island geometry — fall back to intersection.
+        return (zone & island) | {best_node, fault}
+
+    floor_h = max(h for h, _, _ in protecting)
+    rc_nodes = {node for _, _, node in protecting}
+    trimmed = {
+        n for n in zone
+        if n == fault or hop.get(n, -1) >= floor_h
+    } | rc_nodes | {fault}
+    if not trimmed:
+        trimmed = {fault} | rc_nodes
+    return trimmed
+
+
 def _kua_line_end_restoration_sectional_ids(
     s: NetworkState,
     sw_status: dict[str, int] | None = None,
 ) -> frozenset[str]:
-    """Sectionalisers opened since snapshot for KUA line-end back-feed (R47/R49)."""
+    """Sectionalisers opened since snapshot for KUA line-end back-feed (R47/R49/R73).
+
+    PDA feeders must not use this set — otherwise an isolation sectional such as
+    PDA07S-12 is skipped as a colour/energization barrier and neighbour-feeder
+    back-feed keeps the native GIS colour.
+    """
+    primary = s.fault_feeder or s.maint_feeder or ""
+    if not _is_kua_feeder(primary):
+        return frozenset()
     snap_sw = s.snapshot_switch or {}
     sw_st = sw_status if sw_status is not None else s.switch_status
     return frozenset(
@@ -1669,21 +2204,220 @@ def _kua_feeder_energization_ex(
         if st == 0 and fid in s.switch_node:
             if fid in s.interconnect_switch_ids:
                 continue
+            if fid in s.rc_bypass_switch_ids:
+                continue  # open bypass parallel to closed RC — main path still conducts (R53)
             if fid in skip_sectionals:
                 continue
             removed.add(s.switch_node[fid])
     for fid, st in rc_st.items():
         if st == 0 and fid in s.recloser_node:
             removed.add(s.recloser_node[fid])
+    hop = _kua_restoration_hop_from_seed(s, feeder, sw_st)
+    if line_end_restore and hop:
+        cap_hops = [
+            hop[s.switch_node[fid]]
+            for fid in skip_sectionals
+            if fid in s.switch_node and s.switch_node[fid] in hop
+        ]
+        floor_h = max(cap_hops) if cap_hops else 0
+        mesh = _kua_mesh_allowed(s, feeder)
+        remote_seeds = {
+            n for n, h in hop.items()
+            if h >= floor_h and n not in removed and n in mesh
+        }
+        if not remote_seeds:
+            remote_seeds.add(seed)
+        energized = set(remote_seeds)
+        queue: deque[str] = deque(remote_seeds)
+        while queue:
+            cur = queue.popleft()
+            for nb in s.adjacency.get(cur, set()):
+                if nb in removed or nb in energized or nb not in mesh:
+                    continue
+                nb_h = hop.get(nb)
+                if nb_h is None or nb_h < floor_h:
+                    continue
+                energized.add(nb)
+                queue.append(nb)
+        for fid in skip_sectionals:
+            node = s.switch_node.get(fid)
+            if node:
+                energized.add(node)
+        return energized
+    # R67: stay on the KUA mesh — unbounded adjacency would paint every PDA feeder.
+    mesh = _kua_mesh_allowed(s, feeder)
+    if seed not in mesh:
+        return set()
     energized: set[str] = {seed}
     queue: deque[str] = deque([seed])
     while queue:
         cur = queue.popleft()
         for nb in s.adjacency.get(cur, set()):
-            if nb not in removed and nb not in energized:
-                energized.add(nb)
-                queue.append(nb)
+            if nb in removed or nb in energized or nb not in mesh:
+                continue
+            energized.add(nb)
+            queue.append(nb)
     return energized
+
+
+def _kua_backfeed_barrier_hop_cap(
+    s: NetworkState,
+    hop: dict[str, int],
+    sw_status: dict[str, int] | None = None,
+) -> int | None:
+    """Nearest open RC/sectional hop that caps interconnect back-feed (R67)."""
+    sw_st = sw_status if sw_status is not None else s.switch_status
+    barriers: list[int] = []
+    for fid in _tripped_isolation_rc_ids(s):
+        node = s.recloser_node.get(fid)
+        if node and node in hop:
+            barriers.append(hop[node])
+    snap_sw = s.snapshot_switch or {}
+    for fid in _sectionalizing_switch_ids(s):
+        if sw_st.get(fid, 1) == 0 and snap_sw.get(fid, 1) == 1:
+            node = s.switch_node.get(fid)
+            if node and node in hop:
+                barriers.append(hop[node])
+    return min(barriers) if barriers else None
+
+
+def _kua_tie_to_rc_corridor(
+    s: NetworkState,
+    feeder: str,
+    start: str,
+    hop: dict[str, int],
+    removed: set[str],
+) -> set[str]:
+    """Mesh corridor from a closed interconnect tie up to open isolation barriers (R61/R67).
+
+    Walks the graph toward the nearest open RC/sectional hop cap — not a
+    directional hop-band — so ring paths and laterals are included."""
+    rc_nodes = {
+        s.recloser_node[rc_fid]
+        for rc_fid in _tripped_isolation_rc_ids(s)
+        if rc_fid in s.recloser_node
+    }
+    cap = _kua_backfeed_barrier_hop_cap(s, hop)
+    mesh = _kua_mesh_allowed(s, feeder)
+    corridor: set[str] = {start}
+    queue: deque[str] = deque([start])
+    while queue:
+        cur = queue.popleft()
+        for nb in s.adjacency.get(cur, set()):
+            if nb in removed or nb in corridor or nb in rc_nodes:
+                continue
+            if nb not in mesh:
+                continue
+            nh = hop.get(nb)
+            if cap is not None and (nh is None or nh > cap):
+                continue
+            corridor.add(nb)
+            queue.append(nb)
+    return corridor
+
+
+def _kua_backfeed_trace_removed(
+    s: NetworkState,
+    sw_status: dict[str, int] | None = None,
+) -> set[str]:
+    """Barriers for PDA interconnect back-feed corridor tracing."""
+    sw_st = sw_status if sw_status is not None else s.switch_status
+    removed: set[str] = set()
+    if s.fault_node:
+        removed.add(s.fault_node)
+    for fid in _tripped_isolation_rc_ids(s):
+        node = s.recloser_node.get(fid)
+        if node:
+            removed.add(node)
+    for fid in s.interconnect_switch_ids:
+        if sw_st.get(fid, 1) == 0 and fid in s.switch_node:
+            removed.add(s.switch_node[fid])
+    for fid in _sectionalizing_switch_ids(s):
+        if sw_st.get(fid, 1) == 0 and fid in s.switch_node:
+            # R66: every open sectional is a hard barrier for interconnect
+            # back-feed (isolation S-13 must stop PDA10S-08 feed into S-13↔S-14).
+            removed.add(s.switch_node[fid])
+    return removed
+
+
+def _kua_line_end_high_hop_nodes(
+    s: NetworkState,
+    feeder: str,
+    line_on: set[str],
+    hop: dict[str, int],
+) -> set[str]:
+    """Line-end restoration nodes at/line-end-ward of open sectionalisers (R61)."""
+    sectionals = _kua_line_end_restoration_sectional_ids(s)
+    cap_hops = [
+        hop[s.switch_node[fid]]
+        for fid in sectionals
+        if fid in s.switch_node and s.switch_node[fid] in hop
+    ]
+    if not cap_hops:
+        return line_on
+    floor_h = max(cap_hops)
+    high = {n for n in line_on if hop.get(n, 0) >= floor_h}
+    for fid in sectionals:
+        node = s.switch_node.get(fid)
+        if node and hop.get(node, -1) >= floor_h:
+            high.add(node)
+    return high
+
+
+def _live_supply_removed_nodes(s: NetworkState) -> set[str]:
+    """Open switches/reclosers that block supply tracing on the live map."""
+    removed: set[str] = set()
+    if s.fault_node:
+        removed.add(s.fault_node)
+    cut = _live_display_cut_ids(s)
+    restore_sectionals = _kua_line_end_restoration_sectional_ids(s)
+    for fid, st in s.switch_status.items():
+        if st == 0 and fid in s.switch_node and fid in cut:
+            if fid in restore_sectionals or fid in s.rc_bypass_switch_ids:
+                continue
+            removed.add(s.switch_node[fid])
+    for fid, st in s.recloser_status.items():
+        if st == 0 and fid in s.recloser_node:
+            removed.add(s.recloser_node[fid])
+    return removed
+
+
+def _kua_pda_backfeed_paint_zone(
+    s: NetworkState,
+    primary: str,
+    *,
+    hop: dict[str, int],
+    removed: set[str] | None = None,
+) -> set[str]:
+    """KUA mesh nodes allowed to show PDA interconnect supply (tie → open RC only)."""
+    trace_removed = removed if removed is not None else _kua_backfeed_trace_removed(s)
+    snap_sw = s.snapshot_switch or {}
+    zone: set[str] = set()
+    for fid in s.interconnect_switch_ids:
+        if s.switch_status.get(fid, 1) != 1 or snap_sw.get(fid, 1) != 0:
+            continue
+        props, _ = _device_meta(s, fid)
+        f1 = str(props.get("feeder", ""))
+        f2 = str(props.get("feeder2", ""))
+        if primary not in (f1, f2):
+            continue
+        tie_node = s.switch_node.get(fid)
+        if tie_node:
+            zone |= _kua_tie_to_rc_corridor(
+                s, primary, tie_node, hop, trace_removed,
+            )
+    rc_hops = [
+        hop[s.recloser_node[rc_fid]]
+        for rc_fid in _tripped_isolation_rc_ids(s)
+        if rc_fid in s.recloser_node and s.recloser_node[rc_fid] in hop
+    ]
+    cap = _kua_backfeed_barrier_hop_cap(s, hop)
+    if cap is not None:
+        zone = {n for n in zone if n in hop and hop[n] <= cap}
+    elif rc_hops:
+        cap_rc = min(rc_hops)
+        zone = {n for n in zone if n in hop and hop[n] <= cap_rc}
+    return zone
 
 
 def _kua_interconnect_backfeed_nodes(
@@ -1699,25 +2433,12 @@ def _kua_interconnect_backfeed_nodes(
     ward toward the KUA line-end past an open isolation RC."""
     snap_sw = s.snapshot_switch or {}
     sw_st = sw_status if sw_status is not None else s.switch_status
-    hop = _kua_feeder_hop_from_seed(s, feeder)
+    # Restoration hop keeps open sectionals visible for the back-feed hop cap (R67).
+    hop = _kua_restoration_hop_from_seed(s, feeder, sw_st)
     if not hop:
         return set()
 
-    removed: set[str] = set()
-    if s.fault_node:
-        removed.add(s.fault_node)
-    for fid in _tripped_isolation_rc_ids(s):
-        node = s.recloser_node.get(fid)
-        if node:
-            removed.add(node)
-    for fid in s.interconnect_switch_ids:
-        if sw_st.get(fid, 1) == 0 and fid in s.switch_node:
-            removed.add(s.switch_node[fid])
-    restore_sectionals = _kua_line_end_restoration_sectional_ids(s, sw_st)
-    for fid in _sectionalizing_switch_ids(s):
-        if sw_st.get(fid, 1) == 0 and fid in s.switch_node:
-            if fid not in restore_sectionals:
-                removed.add(s.switch_node[fid])
+    removed = _kua_backfeed_trace_removed(s, sw_st)
 
     energized: set[str] = set()
     for fid in s.interconnect_switch_ids:
@@ -1731,53 +2452,8 @@ def _kua_interconnect_backfeed_nodes(
         start = s.switch_node.get(fid)
         if not start or start in removed:
             continue
-        tie_hop = hop.get(start, 0)
-        max_rc_hop = max(
-            (
-                hop[s.recloser_node[rc_fid]]
-                for rc_fid in _tripped_isolation_rc_ids(s)
-                if rc_fid in s.recloser_node and s.recloser_node[rc_fid] in hop
-            ),
-            default=tie_hop,
-        )
-        corridor: set[str] = {start}
-        queue: deque[str] = deque([start])
-        while queue:
-            cur = queue.popleft()
-            cur_h = hop.get(cur, tie_hop)
-            for nb in s.adjacency.get(cur, set()):
-                if nb in removed or nb in corridor:
-                    continue
-                nh = hop.get(nb)
-                if nh is None or nh < cur_h or nh > max_rc_hop:
-                    continue
-                corridor.add(nb)
-                queue.append(nb)
-        load_side: set[str] = set()
-        for rc_fid in _tripped_isolation_rc_ids(s):
-            rc = s.recloser_node.get(rc_fid)
-            if not rc or rc not in hop:
-                continue
-            rc_h = hop[rc]
-            seeds = [
-                nb for nb in s.adjacency.get(rc, set())
-                if hop.get(nb, 0) > rc_h and nb not in removed
-            ]
-            local = set(seeds)
-            queue = deque(seeds)
-            while queue:
-                cur = queue.popleft()
-                cur_h = hop.get(cur, rc_h + 1)
-                for nb in s.adjacency.get(cur, set()):
-                    if nb in removed or nb in local:
-                        continue
-                    nh = hop.get(nb)
-                    if nh is None or nh <= max_rc_hop or nh < cur_h:
-                        continue
-                    local.add(nb)
-                    queue.append(nb)
-            load_side |= local
-        energized |= corridor | load_side
+        corridor = _kua_tie_to_rc_corridor(s, feeder, start, hop, removed)
+        energized |= corridor
     return energized
 
 
@@ -2338,13 +3014,27 @@ def _open_recloser_forced_dark(
     s: NetworkState,
     rc_status: dict[str, int] | None = None,
 ) -> set[str]:
-    """Nodes that must be dark while a recloser is open (incl. dead-end laterals)."""
+    """Nodes that must be dark while a recloser is open (incl. dead-end laterals).
+
+    Lateral RCs (R72): only the load-side island is forced dark — never the
+    CB/mainline component (mesh around the RC node would otherwise darken the
+    whole feeder)."""
     rc_st = rc_status if rc_status is not None else s.recloser_status
     forced: set[str] = set()
     for fid, st in rc_st.items():
         if st != 0 or fid not in s.recloser_node:
             continue
         rc = s.recloser_node[fid]
+        if _recloser_is_lateral(s, fid):
+            props, _ = _device_meta(s, fid)
+            feeder = str(props.get("feeder", "") or "")
+            if not feeder:
+                feeder = str(s.node_feeder.get(rc, "") or "")
+            if feeder:
+                island = _rc_load_side_island(s, fid, feeder)
+                energized = _energization_ex_call(s, rc_st)
+                forced |= island & energized
+            continue
         rc_closed = dict(rc_st)
         rc_closed[fid] = 1
         sup_if_closed = _energization_ex_call(s, rc_closed)
@@ -2412,32 +3102,66 @@ def compute_display_energization(s: NetworkState) -> set[str]:
     return _cc_get(s, "logical_on", lambda: compute_logical_energization(s))
 
 
-def _segment_barred_by_open_device(s: NetworkState, keys: list[str]) -> bool:
+def _segment_barred_by_open_device(
+    s: NetworkState,
+    keys: list[str],
+    *,
+    ignore_switch_ids: frozenset[str] | None = None,
+    ignore_recloser_ids: frozenset[str] | None = None,
+) -> bool:
     """True when an open switch/recloser sits on a conductor segment endpoint."""
+    ignore_sw = ignore_switch_ids or frozenset()
+    ignore_rc = ignore_recloser_ids or frozenset()
     key_set = set(keys)
     for fid, st in s.switch_status.items():
-        if st == 0:
+        if st == 0 and fid not in ignore_sw:
             node = s.switch_node.get(fid)
             if node and node in key_set:
                 return True
     for fid, st in s.recloser_status.items():
-        if st == 0:
+        if st == 0 and fid not in ignore_rc:
             node = s.recloser_node.get(fid)
             if node and node in key_set:
                 return True
     return False
 
 
+def _display_barred_ignore_recloser_ids(s: NetworkState) -> frozenset[str]:
+    """Open reclosers always sectionalise map display — never bypassed (R59).
+
+    RC bypass *switches* are handled in ``_display_barred_ignore_switch_ids``."""
+    return frozenset()
+
+
+def _display_barred_ignore_switch_ids(s: NetworkState) -> frozenset[str]:
+    """Open switches ignored when painting conductors during KUA restoration (R53).
+
+    RC bypass blades stay open in GIS but must not force the whole feeder dark;
+    line-end restoration sectionalisers are open for back-feed, not a map barrier
+    on the load-side past them."""
+    if not _display_restoration_live(s):
+        return frozenset()
+    ignore = set(s.rc_bypass_switch_ids)
+    ignore |= _kua_line_end_restoration_sectional_ids(s)
+    return frozenset(ignore)
+
+
 def _extend_energized_through_conductors(
     s: NetworkState, energized: set[str],
 ) -> set[str]:
     """Promote energization across conductor spans with no open device at endpoints."""
+    bar_ignore = _display_barred_ignore_switch_ids(s)
+    bar_rc = _display_barred_ignore_recloser_ids(s)
     extended = set(energized)
     changed = True
     while changed:
         changed = False
         for keys in s.conductor_keys:
-            if not keys or _segment_barred_by_open_device(s, keys):
+            if not keys or _segment_barred_by_open_device(
+                s, keys,
+                ignore_switch_ids=bar_ignore,
+                ignore_recloser_ids=bar_rc,
+            ):
                 continue
             if any(k in extended for k in keys):
                 before = len(extended)
@@ -2445,6 +3169,89 @@ def _extend_energized_through_conductors(
                 if len(extended) > before:
                     changed = True
     return extended
+
+
+def _extend_supply_map_through_conductors(
+    s: NetworkState,
+    supply: dict[str, str],
+    energized: set[str],
+) -> dict[str, str]:
+    """Paint supply feeder colour across conductor spans (R55/R60)."""
+    bar_sw = _display_barred_ignore_switch_ids(s)
+    bar_rc = _display_barred_ignore_recloser_ids(s)
+    primary = s.fault_feeder or s.maint_feeder or ""
+    back_sources = set(_active_backfeed_source_feeders(s))
+    back_paint_zone: set[str] = set()
+    if _display_restoration_live(s) and back_sources:
+        if _is_kua_feeder(primary):
+            hop = _kua_feeder_hop_from_seed(s, primary)
+            if hop:
+                back_paint_zone = _kua_pda_backfeed_paint_zone(
+                    s, primary, hop=hop, removed=_kua_backfeed_trace_removed(s),
+                )
+        else:
+            # R71: PDA↔PDA restored corridor (e.g. PDA05→PDA07 past closed tie).
+            back_paint_zone = _pda_interconnect_restored_nodes(s, energized)
+    out = dict(supply)
+    changed = True
+    while changed:
+        changed = False
+        for keys in s.conductor_keys:
+            if not keys:
+                continue
+            if _segment_barred_by_open_device(
+                s, keys, ignore_switch_ids=bar_sw, ignore_recloser_ids=bar_rc,
+            ):
+                continue
+            srcs = {out[k] for k in keys if k in out}
+            if len(srcs) != 1:
+                continue
+            src = next(iter(srcs))
+            if not any(k in energized for k in keys):
+                continue
+            if src in back_sources and any(
+                str(s.node_feeder.get(k, "")).startswith("KUA") for k in keys
+            ):
+                for k in keys:
+                    if k not in out and k in back_paint_zone:
+                        out[k] = src
+                        changed = True
+                continue
+            # R71: PDA back-feed colour may extend onto the faulted feeder GIS
+            # within the restored interconnect corridor.
+            if src in back_sources and back_paint_zone and not _is_kua_feeder(primary):
+                for k in keys:
+                    if k in out or k not in energized:
+                        continue
+                    if k not in back_paint_zone:
+                        continue
+                    key_feeder = str(s.node_feeder.get(k, ""))
+                    if key_feeder and key_feeder not in (primary, src):
+                        continue
+                    out[k] = src
+                    changed = True
+                continue
+            # R67: native feeder supply may extend only within the same GIS feeder.
+            for k in keys:
+                if k in out:
+                    continue
+                key_feeder = str(s.node_feeder.get(k, ""))
+                if src == primary and key_feeder and key_feeder != primary:
+                    continue
+                if (
+                    primary
+                    and src not in back_sources
+                    and key_feeder
+                    and key_feeder != src
+                    and not (
+                        str(src).startswith("KUA")
+                        and key_feeder.startswith("KUA")
+                    )
+                ):
+                    continue
+                out[k] = src
+                changed = True
+    return out
 
 
 def _conductor_segment_off(
@@ -2457,27 +3264,44 @@ def _conductor_segment_off(
     zone_index: tuple[cKDTree | None, tuple[float, float, float, float] | None]
     | None = None,
     physical: bool = False,
+    back_paint_zone: set[str] | None = None,
 ) -> bool:
     """True when a conductor segment should render as de-energised."""
     if physical and keys:
         if all(k in energized for k in keys):
             return False
-        if (
-            s is not None
-            and any(k in energized for k in keys)
-            and not _segment_barred_by_open_device(s, keys)
-        ):
-            return False
+        # R76: back-feed highway stays ON up to an open isolation sectional
+        # (one endpoint may be the open switch graph node).
+        if back_paint_zone:
+            in_zone = [k for k in keys if k in back_paint_zone]
+            lit = [k for k in keys if k in energized]
+            if in_zone and lit and len(lit) >= max(1, len(keys) - 1):
+                return False
     if any(k in affected for k in keys):
+        if physical:
+            if all(k in energized for k in keys):
+                return False
+            if back_paint_zone:
+                in_zone = [k for k in keys if k in back_paint_zone]
+                lit = [k for k in keys if k in energized]
+                if in_zone and lit and len(lit) >= max(1, len(keys) - 1):
+                    return False
+            return True
         return True
     if (
         not physical
         and s is not None
         and affected
+        and keys
         and _segment_touches_zone(
             s, keys, affected, zone_xy, zone_index=zone_index,
         )
     ):
+        # R69/R72: main-line at a lateral RC tap is graph-adjacent to the RC
+        # (in the affected island) but stays energised — do not GIS/adjacency
+        # bleed the outage onto those lit trunk segments.
+        if all(k in energized for k in keys):
+            return False
         return True
     return not all(k in energized for k in keys)
 
@@ -2541,6 +3365,499 @@ def _step_instruction_th(s: NetworkState, action: str, fid: str) -> str:
     return _switch_instruction_th(action, fid, feeder, loc)
 
 
+_KUA01_MAINLINE_BOUND_PAIRS: tuple[tuple[str, str], ...] = (
+    ("PDA10S-08", "PDA10S-13"),
+    ("PDA10S-13", "PDA10S-14"),
+    ("PDA10S-14", "KUA01R-04"),
+)
+
+_KUA01_SEGMENT_LABELS: dict[int, str] = {
+    1: "PDA10S-08 ↔ PDA10S-13",
+    2: "PDA10S-13 ↔ PDA10S-14",
+    3: "PDA10S-14 ↔ KUA01R-04",
+}
+
+# PDA07 lateral behind PDA07R-01 — operator preset (R71), not KUA.
+_PDA07_R01_RC = "PDA07R-01"
+_PDA07_R01_SECTIONAL = "PDA07S-12"
+_PDA07_R01_TIE_BETWEEN = "PDA05S-15"  # restore load-side of S-12
+_PDA07_R01_TIE_AFTER = "PDA05S-11"    # restore further lateral / spur
+_PDA07_R01_SEGMENT_LABELS: dict[int, str] = {
+    1: "PDA07R-01 ↔ PDA07S-12",
+    2: "หลัง PDA07S-12",
+}
+
+
+def _kua01_device_hop(s: NetworkState, fid: str) -> int | None:
+    """Hop from KUA01 line-end seed to a mainline device node."""
+    hop = _kua_feeder_hop_from_seed(s, "KUA01")
+    node = s.switch_node.get(fid) or s.recloser_node.get(fid)
+    if not node:
+        return None
+    return hop.get(node)
+
+
+def _kua01_mainline_segment(s: NetworkState) -> int | None:
+    """Return 1|2|3 for a KUA01 mainline fault in a preset zone, else None (R52)."""
+    if s.fault_feeder != "KUA01" or not s.fault_node:
+        return None
+    hop = _kua_feeder_hop_from_seed(s, "KUA01")
+    fault_hop = hop.get(s.fault_node)
+    if fault_hop is None:
+        return None
+    bounds: list[tuple[int, int]] = []
+    for lo_fid, hi_fid in _KUA01_MAINLINE_BOUND_PAIRS:
+        lo_hop = _kua01_device_hop(s, lo_fid)
+        hi_hop = _kua01_device_hop(s, hi_fid)
+        if lo_hop is None or hi_hop is None:
+            return None
+        bounds.append((lo_hop, hi_hop))
+    h08, h13 = bounds[0]
+    _, h14 = bounds[1]
+    _, h04 = bounds[2]
+    if h08 < fault_hop <= h13:
+        return 1
+    if h13 < fault_hop <= h14:
+        return 2
+    if h14 < fault_hop <= h04:
+        return 3
+    return None
+
+
+def _kua01_preset_step_specs(segment: int) -> list[dict]:
+    """Operator-defined KUA01 mainline switching sequence per segment (R52)."""
+    if segment == 1:
+        return [
+            {
+                "action": "OPEN", "fid": "PDA10R-01", "section": "isolation",
+                "reason": "ปลด PDA10R-01 แยกโซนฟอลท์",
+            },
+            {
+                "action": "OPEN", "fid": "PDA10S-13", "section": "isolation",
+                "reason": "ปลด PDA10S-13 แยกโซนฟอลท์",
+            },
+            {
+                "action": "NOTE", "fid": None, "section": "restoration",
+                "reason": "line_end_to:PDA10S-13",
+            },
+            {
+                "action": "CLOSE", "fid": "PDA02S-08", "section": "restoration",
+                "reason": (
+                    "ปิด tie PDA02S-08 จ่ายไฟมาชน PDA10R-01 "
+                    "เพื่อให้ทั้งหมดหลัง PDA10R-01 ใช้ไฟได้"
+                ),
+            },
+            {
+                "action": "NOTE", "fid": None, "section": "restoration",
+                "reason": "repair",
+            },
+        ]
+    if segment == 2:
+        return [
+            {
+                "action": "OPEN", "fid": "PDA10S-13", "section": "isolation",
+                "reason": "ปลด PDA10S-13 แยกโซนฟอลท์",
+            },
+            {
+                "action": "CLOSE", "fid": "PDA10S-08", "section": "restoration",
+                "reason": "ปิด PDA10S-08 จ่ายไฟมาชน PDA10S-13",
+            },
+            {
+                "action": "OPEN", "fid": "PDA10S-14", "section": "restoration",
+                "reason": "เปิด PDA10S-14 เพื่อบล็อกโซนฟอลท์",
+            },
+            {
+                "action": "NOTE", "fid": None, "section": "restoration",
+                "reason": "line_end_to:PDA10S-14",
+            },
+            {
+                "action": "NOTE", "fid": None, "section": "restoration",
+                "reason": "repair",
+            },
+        ]
+    if segment == 3:
+        return [
+            {
+                "action": "OPEN", "fid": "KUA01R-04", "section": "isolation",
+                "reason": "ปลด KUA01R-04 แยกโซนฟอลท์",
+            },
+            {
+                "action": "OPEN", "fid": "PDA10S-14", "section": "isolation",
+                "reason": "ปลด PDA10S-14 แยกโซนฟอลท์",
+            },
+            {
+                "action": "CLOSE", "fid": "PDA10S-08", "section": "restoration",
+                "reason": "ปิด PDA10S-08 จ่ายไฟมาชน PDA10S-14",
+            },
+            {
+                "action": "NOTE", "fid": None, "section": "restoration",
+                "reason": "repair",
+            },
+        ]
+    return []
+
+
+def _kua01_line_end_note_reason(
+    s: NetworkState,
+    work_zone: set[str],
+    plan_open: set[str],
+    target_fid: str,
+) -> tuple[str, int]:
+    """NOTE text confirming KUA line-end back-feed to a sectionaliser."""
+    back_n, back_c = _line_end_backfeed_summary(s, work_zone, "KUA01", plan_open)
+    cust_txt = f" · ~{back_c:,} ลูกค้า" if back_c else ""
+    reason = (
+        f"ยืนยัน: จ่ายไฟจาก KUA01 (ปลายสาย) มาชน {target_fid} แล้ว "
+        f"(~{back_n:,} nodes{cust_txt}) — เริ่มซ่อมจุดฟอลท์เมื่อพร้อม"
+    )
+    return reason, back_n
+
+
+def _kua01_preset_switching_plan(
+    s: NetworkState,
+    work_zone: set[str],
+    *,
+    context_label: str,
+    meta: dict,
+    segment: int,
+) -> dict:
+    """Build the fixed KUA01 mainline switching plan for segment 1|2|3 (R52)."""
+    if not work_zone:
+        return {"error": "ไม่พบโซนปฏิบัติงาน — ตรวจสอบพิกัดหรือจุดฟอลต์"}
+
+    primary_feeder = "KUA01"
+    all_nodes = set(s.adjacency.keys())
+    energized0 = _kua_feeder_energization_ex(s, primary_feeder)
+    de_nodes0 = all_nodes - energized0
+
+    steps: list[dict] = []
+    plan_open: set[str] = set()
+    plan_closed: set[str] = set()
+    step_no = 0
+    cumulative_energized = energized0
+
+    for spec in _kua01_preset_step_specs(segment):
+        action = spec["action"]
+        fid = spec.get("fid")
+        section = spec["section"]
+        raw_reason = spec["reason"]
+        nodes_restored = 0
+
+        if action == "NOTE":
+            step_no += 1
+            if raw_reason.startswith("line_end_to:"):
+                target = raw_reason.split(":", 1)[1]
+                reason, nodes_restored = _kua01_line_end_note_reason(
+                    s, work_zone, plan_open, target,
+                )
+                note_effect = "kuaLineEndAck"
+                note_target = target
+            elif raw_reason == "repair":
+                reason = (
+                    "ซ่อมแซมจุดฟอลท์ — ยืนยันพื้นที่ปลอดภัยก่อนดำเนินการคืนระบบ"
+                )
+                note_effect = None
+                note_target = None
+            else:
+                reason = raw_reason
+                note_effect = None
+                note_target = None
+            note_step: dict = {
+                "action": "NOTE",
+                "switchId": None,
+                "deviceType": "note",
+                "section": section,
+                "feeder": primary_feeder,
+                "location": "",
+                "instructionTh": reason,
+                "reason": f"ขั้นที่ {step_no} — {reason}",
+                "nodesRestored": nodes_restored,
+            }
+            if note_effect:
+                note_step["planEffect"] = note_effect
+            if note_target:
+                note_step["planEffectTarget"] = note_target
+            steps.append(note_step)
+            continue
+
+        step_no += 1
+        props, kind = _device_meta(s, fid)
+        if action == "OPEN":
+            plan_open.add(fid)
+        elif action == "CLOSE":
+            baseline = cumulative_energized
+            plan_closed.add(fid)
+            cumulative_energized = _combined_plan_energized(
+                s, primary_feeder, plan_open, plan_closed,
+            )
+            gained = cumulative_energized - baseline
+            nodes_restored = len(gained)
+            gained_c = _customers_in_nodes(s, gained) or nodes_restored
+            if gained_c and "ลูกค้า" not in raw_reason:
+                raw_reason = f"{raw_reason} (+{nodes_restored:,} nodes · ~{gained_c:,} ลูกค้า)"
+
+        steps.append({
+            "action": action,
+            "switchId": fid,
+            "deviceType": kind,
+            "section": section,
+            "feeder": props.get("feeder", primary_feeder),
+            "location": props.get("location", ""),
+            "instructionTh": _step_instruction_th(s, action, fid),
+            "reason": f"ขั้นที่ {step_no} — {raw_reason}",
+            "nodesRestored": nodes_restored,
+        })
+
+    for i, step in enumerate(steps):
+        step["step"] = i + 1
+
+    de_iso = all_nodes - _combined_plan_energized(
+        s, primary_feeder, plan_open, plan_closed,
+    )
+    total_restorable = sum(st["nodesRestored"] for st in steps)
+    nodes_irrecoverable = len(work_zone)
+    fault_pct = round(nodes_irrecoverable / max(1, len(all_nodes)) * 100, 2)
+    iso_count = sum(1 for st in steps if st.get("section") == "isolation")
+    res_count = sum(1 for st in steps if st.get("section") == "restoration")
+    seg_label = _KUA01_SEGMENT_LABELS.get(segment, "?")
+    next_step = steps[0] if steps else None
+    next_hint = (
+        next_step["instructionTh"]
+        if next_step
+        else "ไม่มีขั้นตอน — ตรวจสอบสถานะเครือข่าย"
+    )
+    operator_brief = (
+        f"{meta.get('operatorBrief', context_label)} · "
+        f"KUA01 แผนกำหนดโซน {segment} ({seg_label})"
+    )
+
+    return {
+        "steps":              steps,
+        "operatorBrief":      operator_brief,
+        "nextStepHint":       next_hint,
+        "isolationSteps":     iso_count,
+        "restorationSteps":   res_count,
+        "faultZoneNodes":     nodes_irrecoverable,
+        "faultZonePct":       fault_pct,
+        "deenergizedNodes":   len(de_nodes0),
+        "totalRestorable":    total_restorable,
+        "nodesIrrecoverable": nodes_irrecoverable,
+        "kua01PresetSegment": segment,
+        "kua01PresetLabel":   seg_label,
+        "kuaLineEndSource":   True,
+        "summary": (
+            f"ดับ {len(de_nodes0):,} nodes · "
+            f"โซนปฏิบัติงาน {nodes_irrecoverable:,} ({fault_pct}%) · "
+            f"แผนกำหนด KUA01 โซน {segment} {len(steps)} ขั้น "
+            f"(แยก {iso_count} / คืน {res_count}) · "
+            f"คืนไฟได้ {total_restorable:,} nodes"
+        ),
+        **meta,
+    }
+
+
+def _pda07_r01_segment(s: NetworkState) -> int | None:
+    """Return 1|2 for a PDA07R-01 lateral fault, else None (R71).
+
+    1 = between PDA07R-01 and PDA07S-12 (inclusive of S-12 hop)
+    2 = load-side of PDA07S-12 (hop > S-12)
+    """
+    if s.fault_feeder != "PDA07" or not s.fault_node:
+        return None
+    if _PDA07_R01_RC not in s.recloser_node:
+        return None
+    if _PDA07_R01_SECTIONAL not in s.switch_node:
+        return None
+    island = _rc_load_side_island(s, _PDA07_R01_RC, "PDA07")
+    if s.fault_node not in island:
+        return None
+    hop = _feeder_protection_hop_map(s, "PDA07")
+    rc_node = s.recloser_node[_PDA07_R01_RC]
+    s12_node = s.switch_node[_PDA07_R01_SECTIONAL]
+    fault_hop = hop.get(s.fault_node)
+    rc_hop = hop.get(rc_node)
+    s12_hop = hop.get(s12_node)
+    if fault_hop is None or rc_hop is None or s12_hop is None:
+        return None
+    if rc_hop < fault_hop <= s12_hop:
+        return 1
+    if fault_hop > s12_hop:
+        return 2
+    return None
+
+
+def _pda07_r01_preset_step_specs(segment: int) -> list[dict]:
+    """Operator-defined PDA07R-01 lateral switching sequence (R71)."""
+    if segment == 1:
+        return [
+            {
+                "action": "OPEN", "fid": _PDA07_R01_SECTIONAL, "section": "isolation",
+                "reason": "ปลด PDA07S-12 แยกโซนฟอลท์ระหว่าง PDA07R-01 กับ PDA07S-12",
+            },
+            {
+                "action": "CLOSE", "fid": _PDA07_R01_TIE_BETWEEN, "section": "restoration",
+                "reason": (
+                    "ปิด tie PDA05S-15 จ่ายไฟจาก PDA05 มาชน PDA07S-12 "
+                    "เพื่อคืนไฟฝั่งโหลดหลังสวิตช์ที่เปิด"
+                ),
+            },
+            {
+                "action": "NOTE", "fid": None, "section": "restoration",
+                "reason": "repair",
+            },
+        ]
+    if segment == 2:
+        return [
+            {
+                "action": "OPEN", "fid": _PDA07_R01_SECTIONAL, "section": "isolation",
+                "reason": "ปลด PDA07S-12 แยกโซนฟอลท์หลัง PDA07S-12",
+            },
+            {
+                "action": "CLOSE", "fid": _PDA07_R01_TIE_AFTER, "section": "restoration",
+                "reason": (
+                    "ปิด tie PDA05S-11 จ่ายไฟจาก PDA05 "
+                    "จนถึงสวิตช์ PDA07S-12 ที่เปิดอยู่"
+                ),
+            },
+            {
+                "action": "NOTE", "fid": None, "section": "restoration",
+                "reason": "repair",
+            },
+        ]
+    return []
+
+
+def _pda07_r01_preset_switching_plan(
+    s: NetworkState,
+    work_zone: set[str],
+    *,
+    context_label: str,
+    meta: dict,
+    segment: int,
+) -> dict:
+    """Fixed PDA07R-01 lateral switching plan for segment 1|2 (R71)."""
+    if not work_zone:
+        return {"error": "ไม่พบโซนปฏิบัติงาน — ตรวจสอบพิกัดหรือจุดฟอลต์"}
+
+    primary_feeder = "PDA07"
+    all_nodes = set(s.adjacency.keys())
+    energized0 = compute_energization(s, planning=True)
+    de_nodes0 = all_nodes - energized0
+
+    steps: list[dict] = []
+    plan_open: set[str] = set()
+    plan_closed: set[str] = set()
+    # Auto-tripped protecting RC is already open — keep it in the cut set.
+    for fid, st in s.recloser_status.items():
+        if st == 0:
+            plan_open.add(fid)
+    step_no = 0
+    cumulative_energized = _energization_under_plan(s, plan_open, plan_closed)
+
+    for spec in _pda07_r01_preset_step_specs(segment):
+        action = spec["action"]
+        fid = spec.get("fid")
+        section = spec["section"]
+        raw_reason = spec["reason"]
+        nodes_restored = 0
+
+        if action == "NOTE":
+            step_no += 1
+            if raw_reason == "repair":
+                reason = (
+                    "ซ่อมแซมจุดฟอลท์ — ยืนยันพื้นที่ปลอดภัยก่อนดำเนินการคืนระบบ"
+                )
+            else:
+                reason = raw_reason
+            steps.append({
+                "action": "NOTE",
+                "switchId": None,
+                "deviceType": "note",
+                "section": section,
+                "feeder": primary_feeder,
+                "location": "",
+                "instructionTh": reason,
+                "reason": f"ขั้นที่ {step_no} — {reason}",
+                "nodesRestored": 0,
+            })
+            continue
+
+        step_no += 1
+        props, kind = _device_meta(s, fid)
+        if action == "OPEN":
+            plan_open.add(fid)
+        elif action == "CLOSE":
+            baseline = cumulative_energized
+            plan_closed.add(fid)
+            cumulative_energized = _energization_under_plan(
+                s, plan_open, plan_closed,
+            )
+            gained = cumulative_energized - baseline
+            nodes_restored = len(gained)
+            gained_c = _customers_in_nodes(s, gained) or nodes_restored
+            if gained_c and "ลูกค้า" not in raw_reason:
+                raw_reason = (
+                    f"{raw_reason} (+{nodes_restored:,} nodes · ~{gained_c:,} ลูกค้า)"
+                )
+
+        steps.append({
+            "action": action,
+            "switchId": fid,
+            "deviceType": kind,
+            "section": section,
+            "feeder": props.get("feeder", primary_feeder),
+            "location": props.get("location", ""),
+            "instructionTh": _step_instruction_th(s, action, fid),
+            "reason": f"ขั้นที่ {step_no} — {raw_reason}",
+            "nodesRestored": nodes_restored,
+        })
+
+    for i, step in enumerate(steps):
+        step["step"] = i + 1
+
+    de_iso = all_nodes - _energization_under_plan(s, plan_open, plan_closed)
+    total_restorable = sum(st["nodesRestored"] for st in steps)
+    nodes_irrecoverable = len(work_zone)
+    fault_pct = round(nodes_irrecoverable / max(1, len(all_nodes)) * 100, 2)
+    iso_count = sum(1 for st in steps if st.get("section") == "isolation")
+    res_count = sum(1 for st in steps if st.get("section") == "restoration")
+    seg_label = _PDA07_R01_SEGMENT_LABELS.get(segment, "?")
+    next_step = steps[0] if steps else None
+    next_hint = (
+        next_step["instructionTh"]
+        if next_step
+        else "ไม่มีขั้นตอน — ตรวจสอบสถานะเครือข่าย"
+    )
+    operator_brief = (
+        f"{meta.get('operatorBrief', context_label)} · "
+        f"PDA07 แผนกำหนดโซนหลัง {_PDA07_R01_RC} · {seg_label}"
+    )
+
+    return {
+        "steps":              steps,
+        "operatorBrief":      operator_brief,
+        "nextStepHint":       next_hint,
+        "isolationSteps":     iso_count,
+        "restorationSteps":   res_count,
+        "faultZoneNodes":     nodes_irrecoverable,
+        "faultZonePct":       fault_pct,
+        "deenergizedNodes":   len(de_nodes0),
+        "residualDarkNodes":  len(de_iso),
+        "totalRestorable":    total_restorable,
+        "nodesIrrecoverable": nodes_irrecoverable,
+        "pda07R01PresetSegment": segment,
+        "pda07R01PresetLabel":   seg_label,
+        "summary": (
+            f"ดับ {len(de_nodes0):,} nodes · "
+            f"โซนปฏิบัติงาน {nodes_irrecoverable:,} ({fault_pct}%) · "
+            f"แผนกำหนด PDA07 {_PDA07_R01_RC} โซน {segment} {len(steps)} ขั้น "
+            f"(แยก {iso_count} / คืน {res_count}) · "
+            f"คืนไฟได้ {total_restorable:,} nodes"
+        ),
+        **meta,
+    }
+
+
 def generate_switching_plan(s: NetworkState) -> dict:
     if not s.fault_node:
         return {"error": "ไม่มี fault ที่ active กรุณาวางจุดฟอลต์หรือระบุพิกัดก่อน"}
@@ -2549,26 +3866,51 @@ def generate_switching_plan(s: NetworkState) -> dict:
     coords_txt = _format_fault_coords(s.fault_lat, s.fault_lon)
     cause = normalize_cause(s.fault_cause)
     phase = s.fault_phase or "ALL"
-    result = _switching_plan_for_zone(
-        s, fault_zone,
-        context_label="จุดฟอลต์ (Fault Isolation)",
-        meta={
-            "planType":    "fault",
-            "feeder":      s.fault_feeder,
-            "faultFeeder": s.fault_feeder,
-            "faultLat":    s.fault_lat,
-            "faultLon":    s.fault_lon,
-            "faultCoords": coords_txt,
-            "faultCause":  cause,
-            "faultPhase":  phase,
-            "operatorBrief": (
-                f"ฟีดเดอร์ {s.fault_feeder or '?'} · พิกัด {coords_txt} · "
-                f"สาเหตุ {cause} · เฟส {phase}"
-            ),
-        },
+    plan_meta = {
+        "planType":    "fault",
+        "feeder":      s.fault_feeder,
+        "faultFeeder": s.fault_feeder,
+        "faultLat":    s.fault_lat,
+        "faultLon":    s.fault_lon,
+        "faultCoords": coords_txt,
+        "faultCause":  cause,
+        "faultPhase":  phase,
+        "operatorBrief": (
+            f"ฟีดเดอร์ {s.fault_feeder or '?'} · พิกัด {coords_txt} · "
+            f"สาเหตุ {cause} · เฟส {phase}"
+        ),
+    }
+    kua01_segment = (
+        _kua01_mainline_segment(s)
+        if _is_kua_feeder(s.fault_feeder) else None
     )
+    pda07_r01_segment = (
+        _pda07_r01_segment(s)
+        if s.fault_feeder == "PDA07" else None
+    )
+    if kua01_segment is not None:
+        result = _kua01_preset_switching_plan(
+            s, fault_zone,
+            context_label="จุดฟอลต์ (Fault Isolation)",
+            meta=plan_meta,
+            segment=kua01_segment,
+        )
+    elif pda07_r01_segment is not None:
+        result = _pda07_r01_preset_switching_plan(
+            s, fault_zone,
+            context_label="จุดฟอลต์ (Fault Isolation)",
+            meta=plan_meta,
+            segment=pda07_r01_segment,
+        )
+    else:
+        result = _switching_plan_for_zone(
+            s, fault_zone,
+            context_label="จุดฟอลต์ (Fault Isolation)",
+            meta=plan_meta,
+        )
     if result.get("error"):
         return result
+    _store_switching_plan_runtime(s, result.get("steps", []))
     norm = generate_normalization_plan(s, result.get("steps", []))
     result["normalizationSteps"] = norm.get("steps", [])
     result["normalizationCount"] = len(result["normalizationSteps"])
@@ -2578,7 +3920,37 @@ def generate_switching_plan(s: NetworkState) -> dict:
             f"{result.get('operatorBrief', '')} · "
             "KUA: สมมติกระแสจากปลายสาย"
         )
+    result.update(_switching_plan_runtime_payload(s))
     return result
+
+
+def _switching_plan_runtime_payload(s: NetworkState) -> dict:
+    """Operator plan-execute progress for API + UI sync (R53)."""
+    return {
+        "switchingPlanExecuted": s.switching_plan_executed,
+        "kuaLineEndAck": s.kua_line_end_display_ack,
+        "lineDisplayPhysical": _display_restoration_live(s),
+    }
+
+
+def _switches_geojson(s: NetworkState) -> list[dict]:
+    out = []
+    for sw in s.switches:
+        fid = sw["properties"]["id"]
+        status = s.switch_status.get(fid, sw["properties"]["status"])
+        out.append({**sw, "properties": {**sw["properties"],
+                    "status": status, "state": "CLOSE" if status == 1 else "OPEN"}})
+    return out
+
+
+def _reclosers_geojson(s: NetworkState) -> list[dict]:
+    out = []
+    for rc in s.reclosers:
+        fid = rc["properties"]["id"]
+        status = s.recloser_status.get(fid, rc["properties"].get("status", 1))
+        out.append({**rc, "properties": {**rc["properties"],
+                    "status": status, "state": "CLOSE" if status == 1 else "OPEN"}})
+    return out
 
 
 def generate_normalization_plan(
@@ -2796,6 +4168,39 @@ def _make_zone_snap_index(
     return cKDTree(arr), bbox
 
 
+def _segment_near_nodes(
+    s: NetworkState,
+    keys: list[str],
+    nodes: set[str],
+    *,
+    snap_m: float = 100.0,
+    zone_index: tuple[cKDTree | None, tuple[float, float, float, float] | None]
+    | None = None,
+) -> bool:
+    """True when a conductor key is GIS-near any node in ``nodes`` (R76 bleed)."""
+    if not keys or not nodes:
+        return False
+    if any(k in nodes for k in keys):
+        return True
+    if zone_index is None:
+        zone_xy = [s.node_xy[k] for k in nodes if k in s.node_xy]
+        zone_index = _make_zone_snap_index(zone_xy, snap_m)
+    tree, bbox = zone_index
+    if tree is None or bbox is None:
+        return False
+    minx, miny, maxx, maxy = bbox
+    for k in keys:
+        if k not in s.node_xy:
+            continue
+        x, y = s.node_xy[k]
+        if x < minx or x > maxx or y < miny or y > maxy:
+            continue
+        dist, _ = tree.query([x, y], k=1)
+        if float(dist) <= snap_m:
+            return True
+    return False
+
+
 def _segment_touches_zone(
     s: NetworkState,
     keys: list[str],
@@ -2896,46 +4301,172 @@ def _shortest_path_in_zone(
     return path
 
 
-def _source_corridor_to_open_device(s: NetworkState, fault: str) -> set[str]:
-    """Source-ward corridor: shortest path toward source CB (R34/R35/R37).
-
-    * No open tie/RC on the path → extend to the CB (CB node stays source-lit).
-    * Open tie/RC blocks the path → dark zone stops at the nearest such device."""
-    feeder = s.fault_feeder or s.node_feeder.get(fault, "")
+def _source_corridor_allowed_sets(
+    s: NetworkState, fault: str, feeder: str,
+) -> tuple[list[set[str]], set[str], set[str]]:
+    """``(allowed_sets, cb_nodes, mesh_allowed)`` for source-corridor tracing."""
+    mesh_allowed = set(s._feeder_keys.get(feeder, []))
+    cb_nodes = _feeder_active_cb_nodes(s, feeder)
     if _is_kua_feeder(feeder):
         hop_allowed = _kua_source_side_nodes(s, fault, feeder)
-        mesh_allowed = set(s._feeder_keys.get(feeder, []))
-    else:
-        hop_allowed = _source_closer_than_fault(s, fault, feeder) | {fault}
-        mesh_allowed = set(s._feeder_keys.get(feeder, []))
-    open_sw = open_isolation_nodes(s)
-    cb_nodes = _feeder_active_cb_nodes(s, feeder)
-    if not cb_nodes:
-        return {fault}
-
-    allowed_sets: list[set[str]] = []
+        allowed_sets: list[set[str]] = []
+        if hop_allowed:
+            allowed_sets.append(hop_allowed)
+        if mesh_allowed - hop_allowed:
+            allowed_sets.append(mesh_allowed)
+        return allowed_sets, cb_nodes, mesh_allowed
+    hop_allowed = _source_closer_than_fault(s, fault, feeder) | {fault}
+    allowed_sets = []
     if hop_allowed:
         allowed_sets.append(hop_allowed)
     if mesh_allowed - hop_allowed:
         allowed_sets.append(mesh_allowed)
+    return allowed_sets, cb_nodes, mesh_allowed
 
+
+def _paths_to_open_targets(
+    s: NetworkState,
+    fault: str,
+    targets: set[str],
+    allowed_sets: list[set[str]],
+    *,
+    open_barrier: set[str] | None = None,
+) -> set[str]:
+    """Union shortest-path corridors from ``fault`` to each open target (R62)."""
+    zone: set[str] = {fault}
+    barrier = open_barrier or set()
+    for allowed in allowed_sets:
+        for target in targets:
+            if target == fault or target not in allowed:
+                continue
+            path = _shortest_path_in_zone(
+                s, fault, {target}, allowed, open_barrier=barrier,
+            )
+            if len(path) > 1:
+                zone |= path
+    return zone
+
+
+def _operator_open_isolation_graph_nodes(s: NetworkState) -> set[str]:
+    """Graph nodes of switches/reclosers the operator opened since fault snapshot."""
+    if not s.fault_node:
+        return set()
+    snap_sw = s.snapshot_switch or {}
+    snap_rc = s.snapshot_recloser or {}
+    nodes: set[str] = set()
+    for fid, st in s.switch_status.items():
+        if st == 0 and snap_sw.get(fid, 1) == 1:
+            node = s.switch_node.get(fid)
+            if node:
+                nodes.add(node)
+    for fid, st in s.recloser_status.items():
+        if st == 0 and snap_rc.get(fid, 1) == 1:
+            node = s.recloser_node.get(fid)
+            if node:
+                nodes.add(node)
+    return nodes
+
+
+def _isolation_envelope_nodes(s: NetworkState, fault: str) -> set[str]:
+    """Blocked section: fault to every operator-opened iso device (R62).
+
+    When both a main-line tie and a lateral RC are opened for isolation, the
+    outage polygon must cover the full main-line corridor — not only the path
+    to the nearest open device."""
+    targets = _operator_open_isolation_graph_nodes(s)
+    if not targets:
+        return {fault}
+    feeder = s.fault_feeder or s.node_feeder.get(fault, "")
+    open_sw = open_isolation_nodes(s)
+    allowed_sets, _, mesh = _source_corridor_allowed_sets(s, fault, feeder)
+    extra_sets: list[set[str]] = list(allowed_sets)
+    if feeder.startswith("PDA"):
+        mesh_f = _feeder_mesh_nodes(s, feeder)
+        dist = _feeder_cb_hop_distance(s, feeder)
+        fh = dist.get(fault, 0)
+        load_allowed = {n for n in mesh_f if dist.get(n, 0) > fh} | {fault}
+        extra_sets.extend([load_allowed, mesh_f])
+    elif _is_kua_feeder(feeder):
+        extra_sets.extend([
+            _kua_load_side_nodes(s, fault, feeder) | {fault},
+            _kua_mesh_allowed(s, feeder),
+        ])
+    else:
+        extra_sets.append(mesh)
+    return _paths_to_open_targets(
+        s, fault, targets, extra_sets, open_barrier=open_sw,
+    )
+
+
+def _kua_residual_outage_nodes(s: NetworkState, feeder: str) -> set[str]:
+    """KUA mesh still dark between isolation barriers after back-feed (R63/R66).
+
+    * Zone1 (RC + sectional): supply reaches the open isolation RC (PDA10R-01)
+      but not past it; hop band up to the open sectional stays dark.
+    * Zone2 (two sectionals): after PDA10S-08 CLOSE + line-end NOTE, the band
+      between PDA10S-13 and PDA10S-14 stays dark with outage polygons."""
+    if not _is_kua_feeder(feeder) or not _active_backfeed_source_feeders(s):
+        return set()
+    live = compute_live_energization(s)
+    hop = _kua_restoration_hop_from_seed(s, feeder)
+    if not hop:
+        return set()
+
+    rc_hops: list[int] = []
+    for fid in _tripped_isolation_rc_ids(s):
+        node = s.recloser_node.get(fid)
+        if node and node in hop:
+            rc_hops.append(hop[node])
+
+    sec_hops: list[int] = []
+    snap_sw = s.snapshot_switch or {}
+    for fid in _sectionalizing_switch_ids(s):
+        if s.switch_status.get(fid, 1) == 0 and snap_sw.get(fid, 1) == 1:
+            node = s.switch_node.get(fid)
+            if node and node in hop:
+                sec_hops.append(hop[node])
+
+    if rc_hops:
+        lo = min(rc_hops)
+        hi = min(sec_hops) if sec_hops else lo
+    elif len(sec_hops) >= 2:
+        lo, hi = min(sec_hops), max(sec_hops)
+    else:
+        return set()
+    mesh = _kua_mesh_allowed(s, feeder)
+    return {
+        n for n in mesh
+        if lo <= hop.get(n, hi + 1) <= hi and n not in live
+    }
+
+
+def _source_corridor_to_open_device(s: NetworkState, fault: str) -> set[str]:
+    """Source-ward corridors toward CB and every open tie/RC on source paths (R62).
+
+    * No open tie/RC on the path → extend to the CB (CB node stays source-lit).
+    * Open tie/RC on the path → include a corridor to each such device."""
+    feeder = s.fault_feeder or s.node_feeder.get(fault, "")
+    allowed_sets, cb_nodes, mesh_allowed = _source_corridor_allowed_sets(
+        s, fault, feeder,
+    )
+    open_sw = open_isolation_nodes(s)
+    if not cb_nodes:
+        return {fault}
+
+    zone: set[str] = {fault}
     for allowed in allowed_sets:
         path_to_cb = _shortest_path_in_zone(
             s, fault, cb_nodes, allowed, open_barrier=open_sw,
         )
         if path_to_cb & cb_nodes:
-            return path_to_cb - cb_nodes
+            zone |= path_to_cb - cb_nodes
 
-    open_targets = open_sw & mesh_allowed - {fault}
-    for allowed in allowed_sets:
-        if not open_targets:
-            break
-        path_to_open = _shortest_path_in_zone(
-            s, fault, open_targets, allowed, open_barrier=open_sw,
+    open_targets = (open_sw & mesh_allowed) - {fault}
+    if open_targets:
+        zone |= _paths_to_open_targets(
+            s, fault, open_targets, allowed_sets, open_barrier=open_sw,
         )
-        if len(path_to_open) > 1:
-            return path_to_open
-    return {fault}
+    return zone if len(zone) > 1 else {fault}
 
 
 def _fault_target_feeders(s: NetworkState) -> frozenset[str]:
@@ -3346,13 +4877,24 @@ def _node_dist(s: NetworkState, a: str, b: str) -> float:
     return math.hypot(ax - bx, ay - by)
 
 
-def _kua_feeder_hop_from_seed(s: NetworkState, feeder: str) -> dict[str, int]:
+def _kua_feeder_hop_from_seed(
+    s: NetworkState,
+    feeder: str,
+    *,
+    skip_open_switch_ids: frozenset[str] | None = None,
+) -> dict[str, int]:
     """Hop counts on the KUA feeder mesh from the line-end seed (R38)."""
     seed = _kua_source_seed_node(s, feeder)
     if not seed:
         return {}
     grid_ties = _kua_grid_tie_nodes(s, feeder)
     open_sw = open_isolation_nodes(s)
+    if skip_open_switch_ids:
+        open_sw -= {
+            s.switch_node[fid]
+            for fid in skip_open_switch_ids
+            if fid in s.switch_node
+        }
     dist: dict[str, int] = {seed: 0}
     queue: deque[str] = deque([seed])
     while queue:
@@ -3375,6 +4917,16 @@ def _kua_feeder_hop_from_seed(s: NetworkState, feeder: str) -> dict[str, int]:
                 continue
             queue.append(nb)
     return dist
+
+
+def _kua_restoration_hop_from_seed(
+    s: NetworkState,
+    feeder: str,
+    sw_status: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Hop map for line-end restore — restoration sectionalisers do not block hops."""
+    skip = _kua_line_end_restoration_sectional_ids(s, sw_status)
+    return _kua_feeder_hop_from_seed(s, feeder, skip_open_switch_ids=skip)
 
 
 def _kua_mesh_allowed(s: NetworkState, feeder: str) -> set[str]:
@@ -3815,15 +5367,16 @@ def _pda_source_corridor_to_cb(
         return path_to_cb - cb_nodes
 
     open_on_source = (open_sw & source_allowed) - {fault}
+    zone: set[str] = {fault}
     if open_on_source:
-        path_to_open = _shortest_path_in_zone(
-            s, fault, open_on_source, source_allowed, open_barrier=open_sw,
+        zone |= _paths_to_open_targets(
+            s, fault, open_on_source, [source_allowed], open_barrier=open_sw,
         )
-        if len(path_to_open) > 1:
-            return path_to_open
+        if len(zone) > 1:
+            zone = _pda_connect_source_hop_islands(s, zone, fault, feeder, fault_hop)
+            return zone - cb_nodes
 
     load_forbidden = {n for n in mesh if dist.get(n, fault_hop) >= fault_hop}
-    zone: set[str] = {fault}
     for seed in s.adjacency.get(fault, set()):
         if seed not in source_allowed or seed in load_forbidden:
             continue
@@ -4211,7 +5764,8 @@ def _core_fault_section_nodes(s: NetworkState) -> set[str]:
         load_zone |= _pda_source_corridor_to_cb(
             s, fault, feeder or s.node_feeder.get(fault, ""),
         )
-    return load_zone if load_zone else {fault}
+    zone = load_zone if load_zone else {fault}
+    return _trim_zone_at_protecting_reclosers(s, zone, feeder, fault)
 
 
 def compute_fault_affected_nodes(s: NetworkState) -> set[str]:
@@ -4223,7 +5777,21 @@ def compute_fault_affected_nodes(s: NetworkState) -> set[str]:
     for feeder in sorted(scope):
         core |= _core_fault_section_for_feeder(s, feeder)
     expanded = _expand_dependent_branch_nodes(s, core)
-    return _filter_nodes_to_feeders(s, expanded, scope)
+    expanded = _filter_nodes_to_feeders(s, expanded, scope)
+    # R68: re-apply RC hop floor after lateral expansion (mesh bleed).
+    trimmed: set[str] = set()
+    for feeder in sorted(scope):
+        fault = _fault_node_on_feeder(s, feeder) or s.fault_node
+        if not fault:
+            continue
+        feeder_nodes = {
+            n for n in expanded
+            if s.node_feeder.get(n) == feeder or n == fault
+        }
+        trimmed |= _trim_zone_at_protecting_reclosers(
+            s, feeder_nodes, feeder, fault,
+        )
+    return trimmed if trimmed else expanded
 
 
 def _snap_latlon_to_node(s: NetworkState, lat: float, lon: float) -> tuple[str | None, str | None]:
@@ -4316,11 +5884,50 @@ def _display_feeder_scope(s: NetworkState) -> set[str]:
     return scope
 
 
-def _backfeed_restoration_active(s: NetworkState) -> bool:
-    """True after a restoration step returns supply into the work zone (R49).
+def _plan_steps_fingerprint(steps: list[dict]) -> tuple:
+    """Stable identity for cached switching-plan steps (R53)."""
+    return tuple(
+        (st.get("action"), st.get("switchId"), st.get("planEffect"))
+        for st in steps
+    )
 
-    Isolation-only (e.g. RC trip) does **not** trigger this — the topological
-    polygon stays until cross-feeder tie CLOSE or KUA sectional OPEN."""
+
+def _clear_switching_plan_runtime(s: NetworkState) -> None:
+    """Reset operator plan-execute progress (R53)."""
+    s.switching_plan_steps = []
+    s.switching_plan_executed = 0
+    s.kua_line_end_display_ack = False
+
+
+def _store_switching_plan_runtime(s: NetworkState, steps: list[dict]) -> None:
+    """Cache generated plan steps for ``/switching-plan/execute`` (R53)."""
+    new_fp = _plan_steps_fingerprint(steps)
+    old_fp = _plan_steps_fingerprint(s.switching_plan_steps)
+    s.switching_plan_steps = list(steps)
+    if new_fp != old_fp:
+        s.switching_plan_executed = 0
+        s.kua_line_end_display_ack = False
+
+
+def _switching_plan_step_at(s: NetworkState, step_idx: int) -> dict | None:
+    """Return the cached plan step for a 1-based execute index."""
+    i = step_idx - 1
+    steps = s.switching_plan_steps
+    if 0 <= i < len(steps):
+        return steps[i]
+    return None
+
+
+def _kua_line_end_display_acknowledged(s: NetworkState) -> bool:
+    """True after operator confirmed KUA line-end back-feed on the plan (R53)."""
+    return bool(s.kua_line_end_display_ack)
+
+
+def _backfeed_restoration_active(s: NetworkState) -> bool:
+    """True after a restoration step returns supply into the work zone (R49/R53).
+
+    Isolation-only (RC trip / sectional OPEN) keeps the full outage polygon until
+    the operator acknowledges KUA line-end NOTE or closes a cross-feeder tie."""
     if not _operator_topology_changed(s):
         return False
     snap_sw = s.snapshot_switch or {}
@@ -4331,7 +5938,7 @@ def _backfeed_restoration_active(s: NetworkState) -> bool:
     if _is_kua_feeder(primary):
         for fid in _sectionalizing_switch_ids(s):
             if s.switch_status.get(fid, 1) == 0 and snap_sw.get(fid, 1) == 1:
-                return True
+                return _kua_line_end_display_acknowledged(s)
     if s.maint_active:
         base = _operational_zone_base(s)
         if base & _compute_live_energization(s):
@@ -4394,13 +6001,18 @@ def _compute_display_affected(s: NetworkState) -> set[str]:
     live_on = compute_live_energization(s)
     all_dark = set(s.adjacency.keys()) - live_on
     dark_core = base & all_dark
-    if s.fault_node and s.fault_node not in live_on:
-        dark_core.add(s.fault_node)
+    if s.fault_node:
+        if s.fault_node not in live_on:
+            dark_core.add(s.fault_node)
+        # R62: keep blocked main-line section until operator recloses iso devices
+        envelope = _isolation_envelope_nodes(s, s.fault_node)
+        dark_core |= envelope & base
+        feeder = s.fault_feeder or s.maint_feeder or ""
+        if _is_kua_feeder(feeder) and _active_backfeed_source_feeders(s):
+            dark_core |= _kua_residual_outage_nodes(s, feeder) & base
     if not dark_core:
         return set()
-    affected = dark_core
-    affected -= live_on
-    return affected
+    return dark_core - live_on
 
 
 def _graph_hops(s: NetworkState, a: str, b: str, limit: int = 12) -> int:
@@ -4826,22 +6438,32 @@ def _kua_line_end_capped_nodes(s: NetworkState, feeder: str, line_on: set[str]) 
     if not rc_hops:
         return line_on
     cap = min(rc_hops)
-    return {n for n in line_on if hop.get(n, cap) <= cap}
+    # R67: nodes missing from the hop map must not inherit the cap default.
+    return {n for n in line_on if n in hop and hop[n] <= cap}
 
 
 def _kua_line_end_rc_load_side_nodes(
     s: NetworkState, feeder: str, line_on: set[str],
 ) -> set[str]:
-    """Line-end energization on the load-side of tripped RCs only (R49).
+    """Trim substation-ward mesh bleed past a tripped RC (R49/R56).
 
-    Meshed rings otherwise light the source-side past an open RC; the map
-    should show supply only up to the open recloser on lateral taps."""
+    Hops rise from the PDA-interconnect side (low) toward the remote KUA
+    line end (high, e.g. KUA01R-04).  Nodes with hop *less* than the open RC
+    sit substation-ward and must not stay lit from ring bypass when only the
+  remote line end is supplying — unless a restoration sectional between the RC
+  and the substation keeps that corridor intentional."""
     tripped = _tripped_isolation_rc_ids(s)
     if not tripped:
         return line_on
-    hop = _kua_feeder_hop_from_seed(s, feeder)
+    hop = _kua_restoration_hop_from_seed(s, feeder)
     if not hop:
         return line_on
+    restore_hops = [
+        hop[s.switch_node[fid]]
+        for fid in _kua_line_end_restoration_sectional_ids(s)
+        if fid in s.switch_node and s.switch_node[fid] in hop
+    ]
+    min_restore_hop = min(restore_hops) if restore_hops else None
     remove: set[str] = set()
     for rc_fid in tripped:
         rc = s.recloser_node.get(rc_fid)
@@ -4851,9 +6473,46 @@ def _kua_line_end_rc_load_side_nodes(
         remove.add(rc)
         for n in line_on:
             h = hop.get(n)
-            if h is not None and h < rc_h:
-                remove.add(n)
+            if h is None or h >= rc_h:
+                continue
+            if min_restore_hop is not None and h >= min_restore_hop:
+                continue
+            remove.add(n)
     return line_on - remove
+
+
+def _kua_cap_line_end_at_sectionals(
+    s: NetworkState,
+    feeder: str,
+    line_on: set[str],
+    *,
+    sw_status: dict[str, int] | None = None,
+) -> set[str]:
+    """Cap line-end energization at open restoration sectionalisers (R56).
+
+    Hops increase toward the remote KUA source (e.g. KUA01R-04).  Keep only
+    nodes at or beyond the opened sectional toward that source; drop
+    substation-ward mesh bleed (e.g. PDA10S-08 when PDA10S-13 is open)."""
+    sectionals = _kua_line_end_restoration_sectional_ids(s, sw_status)
+    if not sectionals:
+        return line_on
+    hop = _kua_restoration_hop_from_seed(s, feeder, sw_status)
+    if not hop:
+        return line_on
+    cap_hops = [
+        hop[s.switch_node[fid]]
+        for fid in sectionals
+        if fid in s.switch_node and s.switch_node[fid] in hop
+    ]
+    if not cap_hops:
+        return line_on
+    cap_h = max(cap_hops)
+    capped = {n for n in line_on if hop.get(n, 0) >= cap_h}
+    for fid in sectionals:
+        node = s.switch_node.get(fid)
+        if node and hop.get(node, -1) >= cap_h:
+            capped.add(node)
+    return capped
 
 
 def _kua_substation_side_nodes(
@@ -4874,6 +6533,8 @@ def _kua_substation_side_nodes(
             removed.add(s.recloser_node[fid])
     for fid, st in sw_st.items():
         if st == 0 and fid in s.switch_node:
+            if fid in s.rc_bypass_switch_ids:
+                continue
             removed.add(s.switch_node[fid])
     allowed = _kua_mesh_allowed(s, feeder)
     energized: set[str] = set()
@@ -4935,25 +6596,255 @@ def _kua_restoration_line_on(
         line_end_restore=line_restore,
     )
     tripped = _tripped_isolation_rc_ids(s)
-    if tripped:
-        if has_backfeed:
-            line_on = _kua_line_end_capped_nodes(s, feeder, line_on)
-        elif line_restore:
-            line_on = _kua_line_end_rc_load_side_nodes(s, feeder, line_on)
-    if line_restore:
+    if tripped and has_backfeed and not line_restore:
+        # PDA tie only — do not light mesh past the open isolation RC toward line end.
+        line_on = _kua_line_end_capped_nodes(s, feeder, line_on)
+    # Substation-side trim when a PDA tie is feeding — it wrongly removes the
+    # remote line-end seed (hop 0) on meshed KUA01 during line-end-only restore.
+    if line_restore and has_backfeed:
         line_on = _kua_line_end_trim_substation_side(
             s, feeder, line_on,
             sw_status=sw_status, rc_status=rc_status,
             line_restore=True,
         )
+    if line_restore and not has_backfeed:
+        line_on = _kua_line_end_rc_load_side_nodes(s, feeder, line_on)
+        line_on = _kua_cap_line_end_at_sectionals(
+            s, feeder, line_on, sw_status=sw_status,
+        )
+        line_on |= _kua_line_end_load_side_touch_nodes(
+            s, feeder, sw_status=sw_status, rc_status=rc_status,
+        )
     return line_on
+
+
+def _kua_line_end_load_side_touch_nodes(
+    s: NetworkState,
+    feeder: str,
+    *,
+    sw_status: dict[str, int] | None = None,
+    rc_status: dict[str, int] | None = None,
+) -> set[str]:
+    """Nodes line-end-ward of open restoration sectionalisers (R55).
+
+    Fills gaps where mesh colocate keys miss the main BFS so spans up to the
+    open sectionaliser (e.g. PDA10S-13) show energized after line-end NOTE."""
+    sectionals = _kua_line_end_restoration_sectional_ids(s, sw_status)
+    if not sectionals:
+        return set()
+    hop = _kua_restoration_hop_from_seed(s, feeder, sw_status)
+    if not hop:
+        return set()
+    cap_hops = [
+        hop[s.switch_node[fid]]
+        for fid in sectionals
+        if fid in s.switch_node and s.switch_node[fid] in hop
+    ]
+    if not cap_hops:
+        return set()
+    cap_h = max(cap_hops)
+    seed = _kua_source_seed_node(s, feeder)
+    if not seed:
+        return set()
+    sw_st = sw_status if sw_status is not None else s.switch_status
+    rc_st = rc_status if rc_status is not None else s.recloser_status
+    removed: set[str] = set()
+    if s.fault_node:
+        removed.add(s.fault_node)
+    for fid, st in rc_st.items():
+        if st == 0 and fid in s.recloser_node:
+            removed.add(s.recloser_node[fid])
+    mesh = _kua_mesh_allowed(s, feeder)
+    touched: set[str] = set()
+    high_seeds = [
+        n for n, h in hop.items()
+        if h >= cap_h and n in mesh and n not in removed
+    ]
+    if not high_seeds:
+        high_seeds = [seed]
+    queue: deque[str] = deque()
+    for node in high_seeds:
+        if node not in touched:
+            touched.add(node)
+            queue.append(node)
+    while queue:
+        cur = queue.popleft()
+        for nb in s.adjacency.get(cur, set()):
+            if nb in touched or nb in removed or nb not in mesh:
+                continue
+            nh = hop.get(nb)
+            if nh is None or nh < cap_h:
+                continue
+            touched.add(nb)
+            queue.append(nb)
+    for fid in sectionals:
+        node = s.switch_node.get(fid)
+        if node and hop.get(node, 0) >= cap_h:
+            touched.add(node)
+    return touched
+
+
+def _kua_line_end_restore_floor_hop(s: NetworkState, feeder: str) -> int | None:
+    """Hop of the outermost open restoration sectional (line-end side) (R64/R66).
+
+    When several sectionalisers are open (e.g. PDA10S-13 + PDA10S-14), use the
+    maximum hop so line-end supply starts at the remote-most device — not at the
+    isolation sectional closer to the substation.
+
+    Uses the restoration hop map so open sectionalisers do not hide themselves
+    from the floor calculation."""
+    if not _kua_line_end_supply_active(s) or not _kua_line_end_display_acknowledged(s):
+        return None
+    hop = _kua_restoration_hop_from_seed(s, feeder)
+    if not hop:
+        return None
+    hops = [
+        hop[s.switch_node[fid]]
+        for fid in _kua_line_end_restoration_sectional_ids(s)
+        if fid in s.switch_node and s.switch_node[fid] in hop
+    ]
+    return max(hops) if hops else None
+
+
+def _kua_line_end_display_floor_hop(s: NetworkState, feeder: str) -> int | None:
+    """Outermost open restoration sectional hop during line-end-only display."""
+    if not _kua_line_end_supply_active(s) or not _kua_line_end_display_acknowledged(s):
+        return None
+    if _kua_interconnect_backfeed_nodes(s, feeder):
+        return None
+    return _kua_line_end_restore_floor_hop(s, feeder)
+
+
+def _trim_kua_line_end_display_energized(
+    s: NetworkState, feeder: str, energized: set[str],
+) -> set[str]:
+    """Drop PDA-side conductor keys after mesh/colocate extension (R56)."""
+    floor_h = _kua_line_end_display_floor_hop(s, feeder)
+    if floor_h is None:
+        return energized
+    hop = _kua_restoration_hop_from_seed(s, feeder)
+    if not hop:
+        return energized
+    trimmed = {n for n in energized if hop.get(n, -1) >= floor_h}
+    for fid in _kua_line_end_restoration_sectional_ids(s):
+        node = s.switch_node.get(fid)
+        if node:
+            trimmed.add(node)
+    for rc_fid in _tripped_isolation_rc_ids(s):
+        rc = s.recloser_node.get(rc_fid)
+        if rc:
+            trimmed.discard(rc)
+    return trimmed
+
+
+def _kua_line_end_substation_ward_segment(
+    hop: dict[str, int], floor_h: int, keys: list[str],
+) -> bool:
+    """True when all known hops on the segment are PDA-ward of the open sectional."""
+    hops = [hop[k] for k in keys if k in hop]
+    if not hops:
+        return False
+    return max(hops) < floor_h
+
+
+def _kua_line_end_past_sectional_segment(
+    hop: dict[str, int], floor_h: int, keys: list[str],
+) -> bool:
+    """True when every keyed node is line-end-ward of the open sectional (R64)."""
+    hops = [hop[k] for k in keys if k in hop]
+    if not hops:
+        return False
+    return min(hops) > floor_h
+
+
+def _pda_backfeed_trace_removed(s: NetworkState) -> set[str]:
+    """Barriers for PDA↔PDA interconnect back-feed corridor tracing (R76)."""
+    removed: set[str] = set()
+    if s.fault_node:
+        removed.add(s.fault_node)
+    for fid in _tripped_isolation_rc_ids(s):
+        node = s.recloser_node.get(fid)
+        if node:
+            removed.add(node)
+    for fid in s.interconnect_switch_ids:
+        if s.switch_status.get(fid, 1) == 0 and fid in s.switch_node:
+            removed.add(s.switch_node[fid])
+    snap_sw = s.snapshot_switch or {}
+    for fid in _sectionalizing_switch_ids(s):
+        if (
+            s.switch_status.get(fid, 1) == 0
+            and snap_sw.get(fid, 1) == 1
+            and fid in s.switch_node
+        ):
+            removed.add(s.switch_node[fid])
+    return removed
+
+
+def _pda_interconnect_backfeed_nodes(s: NetworkState) -> set[str]:
+    """Mesh corridor from closed PDA↔PDA ties on the faulted feeder (R76).
+
+    Independent of live-display ``phys`` so forced-dark load islands on the
+    tie→open-sectional highway still paint.  Never enters the CB/main side of an
+    open lateral RC."""
+    primary = s.fault_feeder or s.maint_feeder or ""
+    if not primary or _is_kua_feeder(primary):
+        return set()
+    snap_sw = s.snapshot_switch or {}
+    removed = _pda_backfeed_trace_removed(s)
+    blocked = _open_lateral_rc_source_side(s)
+    for fid, st in s.recloser_status.items():
+        if st == 0 and fid in s.recloser_node and _recloser_is_lateral(s, fid):
+            blocked.add(s.recloser_node[fid])
+    mesh = _feeder_mesh_nodes(s, primary)
+    restored: set[str] = set()
+    for fid in s.interconnect_switch_ids:
+        if s.switch_status.get(fid, 1) != 1 or snap_sw.get(fid, 1) != 0:
+            continue
+        props, _ = _device_meta(s, fid)
+        f1 = str(props.get("feeder", ""))
+        f2 = str(props.get("feeder2", ""))
+        if primary not in (f1, f2):
+            continue
+        start = s.switch_node.get(fid)
+        if not start or start in removed or start in blocked:
+            continue
+        seen: set[str] = {start}
+        queue: deque[str] = deque([start])
+        while queue:
+            cur = queue.popleft()
+            for nb in s.adjacency.get(cur, set()):
+                if (
+                    nb in seen
+                    or nb in removed
+                    or nb in blocked
+                    or nb not in mesh
+                ):
+                    continue
+                seen.add(nb)
+                queue.append(nb)
+        restored |= seen
+    return restored
+
+
+def _pda_interconnect_restored_nodes(
+    s: NetworkState, phys: set[str],
+) -> set[str]:
+    """Closed interconnect back-feed corridor on the faulted feeder (R71/R76).
+
+    ``phys`` is accepted for call-site compatibility but no longer clips the
+    corridor — live-display energization can omit forced-dark highway nodes."""
+    _ = phys
+    return _pda_interconnect_backfeed_nodes(s)
 
 
 def _compute_live_energization(s: NetworkState) -> set[str]:
     """Uncached live energization (see ``compute_live_energization``)."""
     primary = s.fault_feeder or s.maint_feeder or ""
     if _is_kua_feeder(primary):
-        line_restore = _kua_line_end_supply_active(s)
+        line_restore = (
+            _kua_line_end_supply_active(s)
+            and _kua_line_end_display_acknowledged(s)
+        )
         backfeed = _kua_interconnect_backfeed_nodes(s, primary)
         if line_restore or backfeed:
             line_on = _kua_restoration_line_on(
@@ -4961,7 +6852,14 @@ def _compute_live_energization(s: NetworkState) -> set[str]:
                 line_restore=line_restore,
                 has_backfeed=bool(backfeed),
             )
-            return line_on | backfeed
+            if line_restore and backfeed:
+                # R64: line-end past open sectional + PDA corridor to open RC
+                line_end_on = _kua_cap_line_end_at_sectionals(s, primary, line_on)
+                return line_end_on | backfeed
+            result = line_on | backfeed
+            if line_restore and not backfeed:
+                result = _trim_kua_line_end_display_energized(s, primary, result)
+            return result
     phys = compute_energization_ex(
         s.adjacency, s.node_feeder,
         s.cb_node, s.cb_feeder, s.cb_status, s.feeder_cbs,
@@ -4971,7 +6869,12 @@ def _compute_live_energization(s: NetworkState) -> set[str]:
     )
     if _is_kua_feeder(primary):
         return phys
-    return phys - _open_recloser_forced_dark(s)
+    forced = _open_recloser_forced_dark(s)
+    live = phys - forced
+    # R71/R76: PDA↔PDA interconnect back-feed — mesh corridor, not phys-limited.
+    if _active_backfeed_source_feeders(s):
+        live |= _pda_interconnect_backfeed_nodes(s)
+    return live
 
 
 def compute_live_energization(s: NetworkState) -> set[str]:
@@ -5051,12 +6954,18 @@ def _bfs_supply_in_zone(
                 dist[nb] = nd
                 supply[nb] = supply[cur]
                 queue.append(nb)
-            elif overwrite or (
+                continue
+            better_prio = (
                 dist[nb] == nd
                 and _supply_feeder_priority(s, supply[cur])
                 < _supply_feeder_priority(s, supply.get(nb, ""))
-            ):
-                dist[nb] = nd
+            )
+            if overwrite and (dist[nb] > nd or better_prio):
+                if dist[nb] != nd or supply.get(nb) != supply[cur]:
+                    dist[nb] = nd
+                    supply[nb] = supply[cur]
+                    queue.append(nb)
+            elif not overwrite and better_prio:
                 supply[nb] = supply[cur]
                 queue.append(nb)
 
@@ -5068,17 +6977,7 @@ def _compute_node_supply_feeders(
 
     Multi-source BFS with hop-count ties broken in favour of cross-feeder
     back-feed (e.g. PDA02 via closed PDA02S-08 over the KUA01 GIS tag)."""
-    removed: set[str] = set()
-    if s.fault_node:
-        removed.add(s.fault_node)
-    cut = _live_display_cut_ids(s)
-    for fid, st in s.switch_status.items():
-        if st == 0 and fid in s.switch_node and fid in cut:
-            removed.add(s.switch_node[fid])
-    for fid, st in s.recloser_status.items():
-        if st == 0 and fid in s.recloser_node:
-            removed.add(s.recloser_node[fid])
-
+    removed = _live_supply_removed_nodes(s)
     feeder_source_off: set[str] = set()
     for feeder, cb_set in s.feeder_cbs.items():
         if cb_set and all(s.cb_status.get(fid, 1) == 0 for fid in cb_set):
@@ -5087,9 +6986,15 @@ def _compute_node_supply_feeders(
     primary = s.fault_feeder or s.maint_feeder or ""
     dist: dict[str, int] = {}
     supply: dict[str, str] = {}
+    back_paint_zone: set[str] = set()
+    back_sources_set: set[str] = set()
+    hop: dict[str, int] | None = None
 
     if _is_kua_feeder(primary) and _display_restoration_live(s):
-        line_restore = _kua_line_end_supply_active(s)
+        line_restore = (
+            _kua_line_end_supply_active(s)
+            and _kua_line_end_display_acknowledged(s)
+        )
         backfeed = _kua_interconnect_backfeed_nodes(s, primary)
         line_on = _kua_restoration_line_on(
             s, primary,
@@ -5097,24 +7002,72 @@ def _compute_node_supply_feeders(
             has_backfeed=bool(backfeed),
         )
         line_seeds: list[tuple[str, str]] = []
-        for fid, node in s.cb_node.items():
-            feeder = s.cb_feeder.get(fid, "UNK")
-            if (
-                feeder == primary
-                and s.cb_status.get(fid, 1) == 1
-                and node in energized & line_on
-                and node not in removed
-                and feeder not in feeder_source_off
-            ):
-                line_seeds.append((node, feeder))
+        hop = (
+            _kua_restoration_hop_from_seed(s, primary)
+            if line_restore or backfeed
+            else _kua_feeder_hop_from_seed(s, primary)
+        )
+        back_sources_set = set(_active_backfeed_source_feeders(s))
+        trace_removed = _kua_backfeed_trace_removed(s)
+        if back_sources_set and hop:
+            back_paint_zone = _kua_pda_backfeed_paint_zone(
+                s, primary, hop=hop, removed=trace_removed,
+            )
         seed = _kua_source_seed_node(s, primary)
-        if seed and seed in energized & line_on and seed not in removed:
-            line_seeds.append((seed, primary))
+        if line_restore and not backfeed:
+            # Line-end-only: seed supply from remote KUA end (high hop), not PDA side.
+            seed_set: set[tuple[str, str]] = set()
+            if hop:
+                cap_hops = [
+                    hop[s.switch_node[fid]]
+                    for fid in _kua_line_end_restoration_sectional_ids(s)
+                    if fid in s.switch_node and s.switch_node[fid] in hop
+                ]
+                floor_h = max(cap_hops) if cap_hops else max(
+                    (hop.get(n, 0) for n in line_on), default=0,
+                )
+                max_h = max((hop.get(n, 0) for n in line_on), default=floor_h)
+                for fid, node in s.cb_node.items():
+                    feeder = s.cb_feeder.get(fid, "UNK")
+                    if (
+                        feeder == primary
+                        and s.cb_status.get(fid, 1) == 1
+                        and node in energized & line_on
+                        and node not in removed
+                        and feeder not in feeder_source_off
+                        and hop.get(node, 0) >= floor_h
+                    ):
+                        seed_set.add((node, primary))
+                for node in line_on:
+                    if (
+                        node in energized
+                        and node not in removed
+                        and hop.get(node, 0) >= max_h
+                    ):
+                        seed_set.add((node, primary))
+            elif seed and seed in energized & line_on and seed not in removed:
+                seed_set.add((seed, primary))
+            line_seeds.extend(sorted(seed_set))
+        else:
+            for fid, node in s.cb_node.items():
+                feeder = s.cb_feeder.get(fid, "UNK")
+                if (
+                    feeder == primary
+                    and s.cb_status.get(fid, 1) == 1
+                    and node in energized & line_on
+                    and node not in removed
+                    and feeder not in feeder_source_off
+                ):
+                    line_seeds.append((node, feeder))
+            if seed and seed in energized & line_on and seed not in removed:
+                line_seeds.append((seed, primary))
+        line_paint = line_on
+        if line_restore and backfeed and hop:
+            line_paint = _kua_line_end_high_hop_nodes(s, primary, line_on, hop)
         _bfs_supply_in_zone(
-            s, line_seeds, energized, line_on, removed, supply, dist,
+            s, line_seeds, energized, line_paint, removed, supply, dist,
         )
         snap_sw = s.snapshot_switch or {}
-        hop = _kua_feeder_hop_from_seed(s, primary)
         back_seeds: list[tuple[str, str]] = []
         for fid in s.interconnect_switch_ids:
             if s.switch_status.get(fid, 1) != 1 or snap_sw.get(fid, 1) != 0:
@@ -5128,22 +7081,13 @@ def _compute_node_supply_feeders(
             node = s.switch_node.get(fid)
             if node and node in energized & backfeed and foreign:
                 back_seeds.append((node, foreign))
-        for rc_fid in _tripped_isolation_rc_ids(s):
-            rc = s.recloser_node.get(rc_fid)
-            if not rc or not hop or rc not in hop:
-                continue
-            rc_h = hop[rc]
-            for nb in s.adjacency.get(rc, set()):
-                if hop.get(nb, 0) > rc_h and nb in backfeed:
-                    foreign = next(
-                        (f for _, f in back_seeds if f != primary), None,
-                    )
-                    if foreign:
-                        back_seeds.append((nb, foreign))
         _bfs_supply_in_zone(
-            s, back_seeds, energized, backfeed, removed, supply, dist,
+            s, back_seeds, energized, back_paint_zone, removed, supply, dist,
             overwrite=True,
         )
+        for n in list(supply.keys()):
+            if supply.get(n) in back_sources_set and n not in back_paint_zone:
+                del supply[n]
     else:
         seeds: list[tuple[str, str]] = []
         for fid, node in s.cb_node.items():
@@ -5158,19 +7102,56 @@ def _compute_node_supply_feeders(
         _bfs_supply_in_zone(
             s, seeds, energized, energized, removed, supply, dist,
         )
+        # R71: PDA↔PDA interconnect back-feed — paint neighbour feeder colour
+        # from the closed tie through the restored corridor (stops at open cuts).
+        snap_sw = s.snapshot_switch or {}
+        back_sources_set = set(_active_backfeed_source_feeders(s))
+        if back_sources_set and primary:
+            back_seeds: list[tuple[str, str]] = []
+            for fid in s.interconnect_switch_ids:
+                if s.switch_status.get(fid, 1) != 1 or snap_sw.get(fid, 1) != 0:
+                    continue
+                props, _ = _device_meta(s, fid)
+                f1 = str(props.get("feeder", ""))
+                f2 = str(props.get("feeder2", ""))
+                if primary not in (f1, f2):
+                    continue
+                foreign = f2 if f1 == primary else f1
+                node = s.switch_node.get(fid)
+                if node and node in energized and foreign in back_sources_set:
+                    back_seeds.append((node, foreign))
+            if back_seeds:
+                back_paint_zone = _pda_interconnect_restored_nodes(s, energized)
+                _bfs_supply_in_zone(
+                    s, back_seeds, energized, back_paint_zone, removed, supply, dist,
+                    overwrite=True,
+                )
 
-    # Continuous conductor keys — inherit from energised neighbours (R49).
+    # Continuous conductor keys — inherit from energised neighbours (R49/R60).
     changed = True
     while changed:
         changed = False
         for node in energized:
             if node in supply:
                 continue
+            node_feeder = str(s.node_feeder.get(node, ""))
             for nb in s.adjacency.get(node, set()):
-                if nb in supply:
-                    supply[node] = supply[nb]
-                    changed = True
-                    break
+                if nb not in supply:
+                    continue
+                src = supply[nb]
+                if src in back_sources_set and node not in back_paint_zone:
+                    continue
+                # R67: KUA / interconnect supply must not inherit onto foreign PDA GIS.
+                if (
+                    (src == primary or src in back_sources_set)
+                    and node_feeder
+                    and node_feeder != primary
+                    and not node_feeder.startswith("KUA")
+                ):
+                    continue
+                supply[node] = src
+                changed = True
+                break
     return supply
 
 
@@ -5179,17 +7160,59 @@ def _segment_supply_feeder(
     gis_feeder: str,
     energized: set[str],
     supply_map: dict[str, str],
+    *,
+    s: NetworkState | None = None,
+    hop: dict[str, int] | None = None,
+    back_paint_zone: set[str] | None = None,
 ) -> str | None:
     """Actual source feeder for map tint — always returned when supply is known."""
     live_keys = [k for k in keys if k in energized]
     if not live_keys:
         return None
-    sources = {supply_map.get(k) for k in live_keys} - {None}
+    sources = {supply_map.get(k) for k in keys if supply_map.get(k)} - {None}
     if not sources:
         return None
+    # R71: closed interconnect back-feed wins tint on the restored corridor.
+    if s is not None:
+        back_sources = _active_backfeed_source_feeders(s)
+        if back_sources:
+            back_hit = sorted(
+                sf for sf in sources if sf in back_sources
+            )
+            if back_hit:
+                if back_paint_zone is not None:
+                    in_zone = any(k in back_paint_zone for k in live_keys)
+                    if in_zone or any(
+                        supply_map.get(k) in back_sources for k in live_keys
+                    ):
+                        return back_hit[0]
+                else:
+                    return back_hit[0]
     foreign = sorted(sf for sf in sources if sf != gis_feeder)
+    if foreign and s and str(gis_feeder).startswith("KUA"):
+        back_sources = _active_backfeed_source_feeders(s)
+        if foreign[0] in back_sources:
+            pda_keys = [k for k in keys if supply_map.get(k) in back_sources]
+            blocked = False
+            if back_paint_zone is not None and pda_keys:
+                blocked = not all(k in back_paint_zone for k in pda_keys)
+            if not blocked and hop:
+                rc_hops = [
+                    hop[s.recloser_node[fid]]
+                    for fid in _tripped_isolation_rc_ids(s)
+                    if fid in s.recloser_node and s.recloser_node[fid] in hop
+                ]
+                if rc_hops:
+                    cap = min(rc_hops)
+                    seg_hops = [hop[k] for k in keys if k in hop]
+                    blocked = bool(seg_hops and max(seg_hops) > cap)
+            if blocked:
+                foreign = []
+                sources -= back_sources
     if foreign:
         return foreign[0]
+    if not sources:
+        return gis_feeder or None
     return sorted(sources)[0]
 
 
@@ -5464,13 +7487,35 @@ def _combined_plan_energized(
     return line_on | backfeed if (line_restore or backfeed) else phys
 
 
-def build_live_conductors(s: NetworkState):
-    energized = compute_display_energization(s)
+def _substations_geojson(s: NetworkState) -> list[dict]:
+    out = []
+    for sub in s.substations:
+        fid = sub["properties"]["id"]
+        status = s.cb_status.get(fid, 1)
+        out.append({**sub, "properties": {**sub["properties"],
+                    "status": status, "state": "CLOSE" if status == 1 else "OPEN"}})
+    return out
+
+
+def _live_map_bundle(s: NetworkState) -> dict:
+    """Cached conductors + outage polygons from one energization pass (R51)."""
+    return _cc_get(s, "live_map_bundle", lambda: _build_live_map_bundle(s))
+
+
+def _build_live_map_bundle(s: NetworkState) -> dict:
+    """Single scan of conductor segments → live conductors + outage hulls."""
+    node_energized = compute_display_energization(s)
     restoration_live = _display_restoration_live(s)
+    primary = s.fault_feeder or s.maint_feeder or ""
+    paint_energized = node_energized
     if restoration_live:
-        energized = _extend_energized_through_conductors(s, energized)
-    affected  = _display_affected_nodes(s)
-    has_zone  = bool(s.fault_node or s.maint_active)
+        paint_energized = _extend_energized_through_conductors(s, node_energized)
+        if _is_kua_feeder(primary):
+            paint_energized = _trim_kua_line_end_display_energized(
+                s, primary, paint_energized,
+            )
+    affected = _display_affected_nodes(s)
+    has_zone = bool(s.fault_node or s.maint_active)
     supply_map = (
         _cc_get(
             s, "node_supply",
@@ -5478,6 +7523,10 @@ def build_live_conductors(s: NetworkState):
         )
         if restoration_live else {}
     )
+    if restoration_live and supply_map:
+        supply_map = _extend_supply_map_through_conductors(
+            s, supply_map, paint_energized,
+        )
     feeders_affected: set[str] = set()
     active_feeders = _active_feeders_with_cb(s)
     feeders_source_open = sorted(
@@ -5490,28 +7539,280 @@ def build_live_conductors(s: NetworkState):
         if affected else None
     )
     zone_index = _make_zone_snap_index(zone_xy) if zone_xy else None
-    out = []
+    line_end_floor = (
+        _kua_line_end_restore_floor_hop(s, primary)
+        if restoration_live and _is_kua_feeder(primary) else None
+    )
+    line_end_hop = (
+        _kua_restoration_hop_from_seed(s, primary)
+        if line_end_floor is not None else None
+    )
+    tint_hop = None
+    if restoration_live and _is_kua_feeder(primary):
+        tint_hop = (
+            _kua_restoration_hop_from_seed(s, primary)
+            if _active_backfeed_source_feeders(s)
+            else _kua_feeder_hop_from_seed(s, primary)
+        )
+    back_sources = (
+        _active_backfeed_source_feeders(s) if restoration_live else set()
+    )
+    if restoration_live and tint_hop and back_sources:
+        back_paint_zone = _kua_pda_backfeed_paint_zone(
+            s, primary, hop=tint_hop, removed=_kua_backfeed_trace_removed(s),
+        )
+    elif restoration_live and back_sources and not _is_kua_feeder(primary):
+        # R71: PDA↔PDA restored corridor for supply tint (stops at open cuts).
+        back_paint_zone = _pda_interconnect_restored_nodes(
+            s, compute_live_energization(s),
+        )
+    else:
+        back_paint_zone = set()
+
+    polygon_affected = set(affected)
+    if restoration_live and back_paint_zone:
+        # R76: restored PDA back-feed corridor may remain inside the fault
+        # envelope, but it must not keep outage polygons once it is visibly lit.
+        polygon_affected -= back_paint_zone
+
+    restore_poly_index = None
+    if restoration_live and back_paint_zone:
+        restore_xy = [s.node_xy[k] for k in back_paint_zone if k in s.node_xy]
+        restore_poly_index = _make_zone_snap_index(restore_xy, 160.0)
+
+    # R69: main-line guard at open lateral protecting RC (e.g. PDA07R-01).
+    lateral_main_guard = _protecting_lateral_rc_mainline_guard(s)
+    lateral_guard_index = None
+    if lateral_main_guard:
+        guard_xy = [s.node_xy[k] for k in lateral_main_guard if k in s.node_xy]
+        lateral_guard_index = _make_zone_snap_index(guard_xy, 90.0)
+
+    outage_features: list[dict] = []
+    seen_rings: set[tuple[tuple[float, float], ...]] = set()
+    feeder_node_counts: dict[str, int] = defaultdict(int)
+    for k in polygon_affected:
+        fdr = s.node_feeder.get(k)
+        if fdr:
+            feeder_node_counts[fdr] += 1
+
+    def _append_outage_corridor(
+        feeder: str,
+        ring_utm: list[tuple[float, float]],
+    ) -> None:
+        if scope and feeder not in scope:
+            return
+        key = tuple(ring_utm)
+        if key in seen_rings:
+            return
+        seen_rings.add(key)
+        ring_wgs = _utm_ring_to_wgs_polygon(ring_utm)
+        if not ring_wgs:
+            return
+        outage_features.append({
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [ring_wgs]},
+            "properties": {
+                "feeder": feeder,
+                "nodesAffected": feeder_node_counts.get(feeder, 0),
+                "faultFeeder": s.fault_feeder,
+                "faultCoords": _format_fault_coords(s.fault_lat, s.fault_lon),
+                "zone": "fault-impact",
+                "includesLaterals": True,
+            },
+        })
+
+    conductors_out: list[dict] = []
     for cw, keys in zip(s.conductor_wgs, s.conductor_keys):
         feeder = cw["properties"]["feeder"]
+        # R76: only promote paint across spans that are live or in the back-feed zone.
+        if restoration_live and back_paint_zone and keys:
+            if any(k in back_paint_zone for k in keys) or any(
+                k in node_energized for k in keys
+            ):
+                seg_energized = paint_energized
+            else:
+                seg_energized = node_energized
+        else:
+            seg_energized = paint_energized if restoration_live else node_energized
         if has_zone and scope and feeder not in scope:
             on = True
+        elif (
+            line_end_floor is not None
+            and line_end_hop
+            and _kua_line_end_past_sectional_segment(line_end_hop, line_end_floor, keys)
+        ):
+            on = True
+        elif (
+            line_end_floor is not None
+            and line_end_hop
+            and _kua_line_end_substation_ward_segment(line_end_hop, line_end_floor, keys)
+        ):
+            # R65: PDA tie→RC corridor sits hop-ward of S-13 but is live from
+            # interconnect back-feed — do not force those segments OFF.
+            if keys and any(k in seg_energized for k in keys):
+                on = not _conductor_segment_off(
+                    keys, seg_energized, affected, s=s, zone_xy=zone_xy,
+                    zone_index=zone_index, physical=restoration_live,
+                    back_paint_zone=back_paint_zone,
+                )
+            else:
+                on = False
         elif has_zone:
             on = not _conductor_segment_off(
-                keys, energized, affected, s=s, zone_xy=zone_xy,
+                keys, seg_energized, affected, s=s, zone_xy=zone_xy,
                 zone_index=zone_index, physical=restoration_live,
+                back_paint_zone=back_paint_zone,
             )
         else:
-            on = True  # R26: pre-fault — every conductor segment on (100 %)
+            on = True
         if not on:
             feeders_affected.add(feeder)
+            if has_zone and (not scope or feeder in scope):
+                # R76: fault-side OFF legs next to the restored highway must not
+                # paint 45 m outage buffers that cover PDA05-tinted conductors.
+                # R69: lateral-island OFF legs must not paint across the tap onto
+                # the energised main line past PDA07R-01 (etc.).
+                skip_poly = bool(
+                    (
+                        restoration_live and back_paint_zone and (
+                            any(k in back_paint_zone for k in keys)
+                            or _segment_near_nodes(
+                                s, keys, back_paint_zone, snap_m=160.0,
+                                zone_index=restore_poly_index,
+                            )
+                        )
+                    )
+                    or (
+                        lateral_main_guard and (
+                            any(k in lateral_main_guard for k in keys)
+                            or _segment_near_nodes(
+                                s, keys, lateral_main_guard, snap_m=90.0,
+                                zone_index=lateral_guard_index,
+                            )
+                        )
+                    )
+                )
+                if not skip_poly:
+                    pts_utm = [
+                        to_utm(lon, lat)
+                        for lon, lat in cw["geometry"]["coordinates"]
+                    ]
+                    ring_utm = _buffer_polyline_ring_utm(pts_utm, half_width_m=45.0)
+                    if ring_utm:
+                        _append_outage_corridor(feeder, ring_utm)
         props: dict = {**cw["properties"], "status": "on" if on else "off"}
         if on and restoration_live:
-            supply_f = _segment_supply_feeder(keys, feeder, energized, supply_map)
+            supply_f = _segment_supply_feeder(
+                keys, feeder, paint_energized, supply_map,
+                s=s, hop=tint_hop, back_paint_zone=back_paint_zone,
+            )
+            # R67: only recolour the faulted KUA feeder (incl. PDA back-feed tint).
+            # Unrelated GIS feeders keep their native map colours.
+            if (
+                supply_f
+                and _is_kua_feeder(primary)
+                and feeder != primary
+                and not str(feeder).startswith("KUA")
+            ):
+                supply_f = None
+            # R71: PDA faulted feeder must show interconnect source colour when
+            # any live key is in the restored back-feed corridor.
+            if (
+                not supply_f
+                and back_sources
+                and feeder == primary
+                and not _is_kua_feeder(primary)
+            ):
+                hit = sorted(
+                    {
+                        supply_map.get(k)
+                        for k in keys
+                        if supply_map.get(k) in back_sources
+                        and (not back_paint_zone or k in back_paint_zone or k in paint_energized)
+                    } - {None}
+                )
+                if hit:
+                    supply_f = hit[0]
+            # R74: any ON primary segment touching the restored corridor must
+            # show the interconnect source colour (overrides native GIS / stale
+            # primary supply left on coastal laterals past the closed tie).
+            if (
+                back_sources
+                and feeder == primary
+                and not _is_kua_feeder(primary)
+                and back_paint_zone
+                and any(k in back_paint_zone for k in keys)
+            ):
+                supply_f = sorted(back_sources)[0]
             if supply_f:
                 props["supplyFeeder"] = supply_f
-                props["displayColor"] = s.feeder_color.get(supply_f, props.get("color"))
-        out.append({**cw, "properties": props})
-    return out, sorted(feeders_affected), feeders_source_open
+                tint = s.feeder_color.get(supply_f, props.get("color"))
+                props["displayColor"] = tint
+                # R73: also overwrite GIS colour so every render path tints.
+                props["color"] = tint
+        conductors_out.append({**cw, "properties": props})
+
+    if has_zone and polygon_affected:
+        for fid in s.tie_switch_ids:
+            if s.switch_status.get(fid, 1) != 0:
+                continue
+            node = s.switch_node.get(fid)
+            if not node or node not in s.node_xy or node not in polygon_affected:
+                continue
+            # R76: open cut at the restored corridor edge must not keep a
+            # 45 m outage disc on top of the PDA05 highway.
+            # R69: open ties on the lateral island must not disc-bleed onto the
+            # energised main line at the protecting RC tap.
+            if restoration_live and back_paint_zone and (
+                any(nb in back_paint_zone for nb in s.adjacency.get(node, set()))
+                or _segment_near_nodes(
+                    s, [node], back_paint_zone, snap_m=160.0,
+                    zone_index=restore_poly_index,
+                )
+            ):
+                continue
+            if lateral_main_guard and (
+                node in lateral_main_guard
+                or any(nb in lateral_main_guard for nb in s.adjacency.get(node, set()))
+                or _segment_near_nodes(
+                    s, [node], lateral_main_guard, snap_m=90.0,
+                    zone_index=lateral_guard_index,
+                )
+            ):
+                continue
+            if any(nb in polygon_affected for nb in s.adjacency.get(node, set())):
+                sw_props = next(
+                    (sw["properties"] for sw in s.switches if sw["properties"]["id"] == fid),
+                    None,
+                )
+                feeder = (sw_props or {}).get("feeder", s.node_feeder.get(node, "UNK"))
+                x, y = s.node_xy[node]
+                ring_utm = _buffer_ring_utm(x, y, 45.0)
+                _append_outage_corridor(feeder, ring_utm)
+        if not outage_features:
+            for k in polygon_affected:
+                if k not in s.node_xy:
+                    continue
+                feeder = s.node_feeder.get(k, s.fault_feeder or "UNK")
+                x, y = s.node_xy[k]
+                ring_utm = _buffer_ring_utm(x, y, 45.0)
+                _append_outage_corridor(feeder, ring_utm)
+
+    return {
+        "conductors": conductors_out,
+        "outage_polys": outage_features,
+        "feeders_affected": sorted(feeders_affected),
+        "feeders_source_open": feeders_source_open,
+    }
+
+
+def build_live_conductors(s: NetworkState):
+    bundle = _live_map_bundle(s)
+    return (
+        bundle["conductors"],
+        bundle["feeders_affected"],
+        bundle["feeders_source_open"],
+    )
 
 
 def get_live_conductors_view(s: NetworkState):
@@ -5520,8 +7821,10 @@ def get_live_conductors_view(s: NetworkState):
 
 
 def get_outage_polygons_cached(s: NetworkState) -> list[dict]:
-    """Cached outage hull features — shares energization cache with conductors (R51)."""
-    return _cc_get(s, "outage_polys", lambda: outage_polygons(s))
+    """Cached outage hull features — shares ``live_map_bundle`` with conductors (R51)."""
+    if not s.fault_node and not s.maint_active:
+        return []
+    return _live_map_bundle(s)["outage_polys"]
 
 
 def _scada_payload(
@@ -5536,7 +7839,8 @@ def _scada_payload(
     has_zone = bool(s.fault_node or s.maint_active)
     backfeed_sources = sorted(_active_backfeed_source_feeders(s))
     line_end_active = (
-        _kua_line_end_supply_active(s) if has_zone else False
+        _kua_line_end_supply_active(s) and _kua_line_end_display_acknowledged(s)
+        if has_zone else False
     )
     primary = s.fault_feeder or s.maint_feeder or ""
     active_supply: list[str] = []
@@ -5553,6 +7857,7 @@ def _scada_payload(
         "lineEndRestoreActive": line_end_active,
         "backfeedSourceFeeders": backfeed_sources,
         "activeSupplyFeeders": active_supply,
+        "appBuild": "R76",
         "faultFeeder":       s.fault_feeder,
         "faultFeeders":      s.fault_feeders,
         "faultLat":          s.fault_lat,
@@ -5588,19 +7893,32 @@ def _scada_payload(
 
 
 def _build_live_refresh_payload(s: NetworkState) -> dict:
-    """One energization pass → conductors + SCADA + outage overlay (R51)."""
-    features, feeders_affected, feeders_source_open = get_live_conductors_view(s)
-    polys = get_outage_polygons_cached(s)
+    """One energization pass → full operator map payload (R51)."""
+    bundle = _live_map_bundle(s)
     return {
         "conductors": {
             "type": "FeatureCollection",
-            "features": features,
+            "features": bundle["conductors"],
         },
         "outagePoly": {
             "type": "FeatureCollection",
-            "features": polys,
+            "features": bundle["outage_polys"],
         },
-        "scada": _scada_payload(s, feeders_affected, feeders_source_open),
+        "scada": _scada_payload(
+            s, bundle["feeders_affected"], bundle["feeders_source_open"],
+        ),
+        "switches": {
+            "type": "FeatureCollection",
+            "features": _switches_geojson(s),
+        },
+        "reclosers": {
+            "type": "FeatureCollection",
+            "features": _reclosers_geojson(s),
+        },
+        "substations": {
+            "type": "FeatureCollection",
+            "features": _substations_geojson(s),
+        },
     }
 
 
@@ -5757,11 +8075,13 @@ def _switching_plan_for_zone(
         section: str,
         reason: str,
         nodes_restored: int = 0,
+        plan_effect: str | None = None,
+        plan_effect_target: str | None = None,
     ) -> None:
         nonlocal step_no
         step_no += 1
         if action == "NOTE" or not fid:
-            steps.append({
+            note_step = {
                 "action": action,
                 "switchId": None,
                 "deviceType": "note",
@@ -5771,7 +8091,12 @@ def _switching_plan_for_zone(
                 "instructionTh": reason,
                 "reason": f"ขั้นที่ {step_no} — {reason}",
                 "nodesRestored": nodes_restored,
-            })
+            }
+            if plan_effect:
+                note_step["planEffect"] = plan_effect
+            if plan_effect_target:
+                note_step["planEffectTarget"] = plan_effect_target
+            steps.append(note_step)
             return
         props, kind = _device_meta(s, fid)
         steps.append({
@@ -5903,6 +8228,7 @@ def _switching_plan_for_zone(
                     f"ลดผลกระทบสูงสุดแล้ว เริ่มซ่อมจุดฟอลต์เมื่อพร้อม"
                 ),
                 nodes_restored=back_n,
+                plan_effect="kuaLineEndAck",
             )
         break
 
@@ -6051,122 +8377,15 @@ def _buffer_polyline_ring_utm(
 
 
 def outage_polygons(s: NetworkState) -> list[dict]:
-    """Outage overlay polygons along de-energised conductor geometry (R15–R17/R36).
-
-    Small zones use per-segment corridor buffers; large zones merge a convex hull
-    per feeder so ``/outage-polygon`` returns quickly after fault placement."""
-    if not s.fault_node and not s.maint_active:
-        return []
-    affected = _display_affected_nodes(s)
-    if not affected:
-        return []
-    physical = _display_restoration_live(s)
-    scope = _fault_target_feeders(s) if s.fault_node else frozenset()
-    energized = compute_display_energization(s)
-    zone_xy = [s.node_xy[k] for k in affected if k in s.node_xy]
-    zone_index = _make_zone_snap_index(zone_xy)
-    feeder_node_counts: dict[str, int] = defaultdict(int)
-    for k in affected:
-        fdr = s.node_feeder.get(k)
-        if fdr:
-            feeder_node_counts[fdr] += 1
-
-    features: list[dict] = []
-    seen_rings: set[tuple[tuple[float, float], ...]] = set()
-
-    def _append_corridor(
-        feeder: str,
-        ring_utm: list[tuple[float, float]],
-        *,
-        ring_wgs: list[list[float]] | None = None,
-    ) -> None:
-        if scope and feeder not in scope:
-            return
-        if ring_wgs is None:
-            key = tuple(ring_utm)
-            if key in seen_rings:
-                return
-            seen_rings.add(key)
-            ring_wgs = _utm_ring_to_wgs_polygon(ring_utm)
-        if not ring_wgs:
-            return
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "Polygon", "coordinates": [ring_wgs]},
-            "properties": {
-                "feeder":          feeder,
-                "nodesAffected":   feeder_node_counts.get(feeder, 0),
-                "faultFeeder":     s.fault_feeder,
-                "faultCoords":     _format_fault_coords(s.fault_lat, s.fault_lon),
-                "zone":            "fault-impact",
-                "includesLaterals": True,
-            },
-        })
-
-    off_by_feeder: dict[str, list[tuple[float, float]]] = defaultdict(list)
-    off_segment_count = 0
-    for cw, keys in zip(s.conductor_wgs, s.conductor_keys):
-        feeder = cw["properties"]["feeder"]
-        if scope and feeder not in scope:
-            continue
-        if not _conductor_segment_off(
-            keys, energized, affected, s=s, zone_xy=zone_xy,
-            zone_index=zone_index, physical=physical,
-        ):
-            continue
-        off_segment_count += 1
-        for lon, lat in cw["geometry"]["coordinates"]:
-            off_by_feeder[feeder].append(to_utm(lon, lat))
-
-    # R40 — always corridor along off segments; convex hull is too wide on PDA.
-    for cw, keys in zip(s.conductor_wgs, s.conductor_keys):
-        feeder = cw["properties"]["feeder"]
-        if scope and feeder not in scope:
-            continue
-        if not _conductor_segment_off(
-            keys, energized, affected, s=s, zone_xy=zone_xy,
-            zone_index=zone_index, physical=physical,
-        ):
-            continue
-        pts_utm = [
-            to_utm(lon, lat)
-            for lon, lat in cw["geometry"]["coordinates"]
-        ]
-        ring_utm = _buffer_polyline_ring_utm(pts_utm, half_width_m=45.0)
-        if ring_utm:
-            _append_corridor(feeder, ring_utm)
-
-    for fid in s.tie_switch_ids:
-        if s.switch_status.get(fid, 1) != 0:
-            continue
-        node = s.switch_node.get(fid)
-        if not node or node not in s.node_xy or node not in affected:
-            continue
-        if any(nb in affected for nb in s.adjacency.get(node, set())):
-            sw_props = next(
-                (sw["properties"] for sw in s.switches if sw["properties"]["id"] == fid),
-                None,
-            )
-            feeder = (sw_props or {}).get("feeder", s.node_feeder.get(node, "UNK"))
-            x, y = s.node_xy[node]
-            ring_utm = _buffer_ring_utm(x, y, 45.0)
-            _append_corridor(feeder, ring_utm)
-
-    if not features:
-        keys = [k for k in affected if k in s.node_xy]
-        if keys:
-            for k in keys:
-                feeder = s.node_feeder.get(k, s.fault_feeder or "UNK")
-                x, y = s.node_xy[k]
-                ring_utm = _buffer_ring_utm(x, y, 45.0)
-                _append_corridor(feeder, ring_utm)
-    return features
+    """Outage overlay — delegates to ``live_map_bundle`` (R51)."""
+    return get_outage_polygons_cached(s)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Flask app
 # ─────────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.secret_key = os.environ.get("SESSION_SECRET", "dev-only-do-not-use-in-prod")
 USERNAME = os.environ.get("PEA_USERNAME", "PEAPJK")
 PASSWORD = os.environ.get("PEA_PASSWORD", "1234")
@@ -6220,25 +8439,13 @@ def conductor():
 @app.route("/switches")
 def switches():
     s = get_state()
-    out = []
-    for sw in s.switches:
-        fid    = sw["properties"]["id"]
-        status = s.switch_status.get(fid, sw["properties"]["status"])
-        out.append({**sw, "properties": {**sw["properties"],
-                    "status": status, "state": "CLOSE" if status == 1 else "OPEN"}})
-    return jsonify({"type": "FeatureCollection", "features": out})
+    return jsonify({"type": "FeatureCollection", "features": _switches_geojson(s)})
 
 
 @app.route("/reclosers")
 def reclosers():
     s = get_state()
-    out = []
-    for rc in s.reclosers:
-        fid    = rc["properties"]["id"]
-        status = s.recloser_status.get(fid, rc["properties"].get("status", 1))
-        out.append({**rc, "properties": {**rc["properties"],
-                    "status": status, "state": "CLOSE" if status == 1 else "OPEN"}})
-    return jsonify({"type": "FeatureCollection", "features": out})
+    return jsonify({"type": "FeatureCollection", "features": _reclosers_geojson(s)})
 
 
 @app.route("/reclosers/<fid>/toggle", methods=["POST"])
@@ -6296,23 +8503,9 @@ def feeders():
 @app.route("/substations")
 def substations():
     s = get_state()
-    out = []
-    for sub in s.substations:
-        fid    = sub["properties"]["id"]
-        status = s.cb_status.get(fid, 1)
-
-        out.append({
-            **sub,
-            "properties": {
-                **sub["properties"],
-                "status": status,
-                "state": "CLOSE" if status == 1 else "OPEN"
-            }
-        })
-
     return jsonify({
         "type": "FeatureCollection",
-        "features": out
+        "features": _substations_geojson(s),
     })
 
 
@@ -6363,10 +8556,10 @@ def toggle_substation(fid: str):
 
 
 def _take_snapshot(s: NetworkState) -> None:
-    if s.snapshot_switch is None:
-        s.snapshot_switch = dict(s.switch_status)
-        s.snapshot_cb     = dict(s.cb_status)
-        s.snapshot_recloser = dict(s.recloser_status)
+    """Capture switch/CB/RC state at fault (or maintenance) placement for restore."""
+    s.snapshot_switch = dict(s.switch_status)
+    s.snapshot_cb = dict(s.cb_status)
+    s.snapshot_recloser = dict(s.recloser_status)
 
 
 def _restore_snapshot(s: NetworkState) -> None:
@@ -6462,6 +8655,10 @@ def set_fault():
     s.fault_phase  = phase
     s.fault_started_at = time.time()
 
+    # R68: fault behind RC → trip protecting RC before zone/cache compute so the
+    # outage corridor stops at the RC (snapshot already captured CLOSED state).
+    tripped_rcs = _auto_trip_protecting_reclosers(s)
+
     _invalidate_compute_cache(s)
     # Warm fault-zone cache once so parallel /conductor + /outage-polygon reuse it (R36).
     affected = _cc_get(s, "fault_topo", lambda: compute_fault_affected_nodes(s))
@@ -6480,6 +8677,7 @@ def set_fault():
         "feeders": s.fault_feeders,
         "lat": s.fault_lat, "lon": s.fault_lon,
         "cause": cause, "phase": phase, "outageId": s.fault_id,
+        "trippedReclosers": tripped_rcs,
     })
 
 
@@ -6505,6 +8703,8 @@ def clear_fault():
     s.fault_cause = s.fault_phase = None
     s.fault_id = None
     s.fault_started_at = None
+
+    _clear_switching_plan_runtime(s)
 
     # Restore pre-switching state (overrides original "open all switches" bug)
     _restore_snapshot(s)
@@ -6611,7 +8811,12 @@ def get_maintenance():
 
 @app.route("/maintenance/switching-plan", methods=["POST"])
 def maintenance_switching_plan():
-    return jsonify(generate_maintenance_switching_plan(get_state()))
+    s = get_state()
+    result = generate_maintenance_switching_plan(s)
+    if not result.get("error"):
+        _store_switching_plan_runtime(s, result.get("steps", []))
+        result.update(_switching_plan_runtime_payload(s))
+    return jsonify(result)
 
 
 @app.route("/switching-plan/normalize", methods=["POST"])
@@ -6651,19 +8856,61 @@ def execute_step(step_idx: int):
     action = data.get("action")
     sw_id  = data.get("switchId")
     s      = get_state()
+    plan_step = _switching_plan_step_at(s, step_idx)
+
     if action == "NOTE" or not sw_id:
-        return jsonify({"ok": True, "skipped": True, "action": action})
+        effect = (
+            (plan_step or {}).get("planEffect")
+            or data.get("planEffect")
+        )
+        instr = str(
+            (plan_step or {}).get("instructionTh")
+            or (plan_step or {}).get("reason")
+            or data.get("instructionTh")
+            or ""
+        )
+        if effect == "kuaLineEndAck" or (
+            _is_kua_feeder(s.fault_feeder or "")
+            and "จ่ายไฟจาก KUA01 (ปลายสาย)" in instr
+        ):
+            s.kua_line_end_display_ack = True
+        s.switching_plan_executed = max(s.switching_plan_executed, step_idx)
+        _invalidate_compute_cache(s)
+        # R75: do not rebuild liveMap here — NOTE ack must return immediately.
+        return jsonify({
+            "ok": True,
+            "action": action,
+            "planEffect": effect,
+            "kuaLineEndAck": s.kua_line_end_display_ack,
+            "lineDisplayPhysical": _display_restoration_live(s),
+            **_switching_plan_runtime_payload(s),
+        })
+
     if sw_id in s.recloser_status:
         s.recloser_status[sw_id] = 1 if action == "CLOSE" else 0
         new_status = s.recloser_status[sw_id]
+        device_type = "recloser"
     elif sw_id in s.switch_node:
         s.switch_status[sw_id] = 1 if action == "CLOSE" else 0
         new_status = s.switch_status[sw_id]
+        device_type = "switch"
     else:
         abort(404)
+    s.switching_plan_executed = max(s.switching_plan_executed, step_idx)
     _invalidate_compute_cache(s)
-    return jsonify({"ok": True, "switchId": sw_id, "action": action,
-                    "newStatus": new_status})
+    # R75: return device status immediately. Full map paint stays on
+    # /live-refresh (frontend refreshLiveAfterPlanStep) so OPEN PDA07S-12
+    # does not hang waiting for a multi-minute liveMap rebuild.
+    return jsonify({
+        "ok": True,
+        "switchId": sw_id,
+        "action": action,
+        "newStatus": new_status,
+        "deviceType": device_type,
+        "state": "CLOSE" if new_status == 1 else "OPEN",
+        "lineDisplayPhysical": _display_restoration_live(s),
+        **_switching_plan_runtime_payload(s),
+    })
 
 
 # ── Dashboard ───────────────────────────────────────────────────────────────
@@ -6873,7 +9120,9 @@ def healthz():
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     init_db()
-    get_state()
+    s = get_state()
+    print("Warming live map cache…", flush=True)
+    _cc_get(s, "live_refresh", lambda: _build_live_refresh_payload(s))
     port = int(os.environ.get("PORT", "5000"))
     print(f"\nSERVER READY → http://0.0.0.0:{port}", flush=True)
     print("  UI: templates/indexpro.html\n", flush=True)
